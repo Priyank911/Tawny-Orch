@@ -1,0 +1,32 @@
+# Dependencies and generated Electron/Vite output
+node_modules/
+out/
+dist/
+release/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Local runtime data and credentials
+.env
+.env.*
+!.env.example
+.tawny-orch/
+
+# Test and coverage output
+coverage/
+test-artifacts/
+.vitest/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
