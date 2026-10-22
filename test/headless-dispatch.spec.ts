@@ -14,20 +14,21 @@ vi.mock('../src/main/agents/childRunner', async (importOriginal) => {
 });
 
 import { runChild, MAX_OUTPUT_CHARS, parseCodexJson, prepareChildSpawn } from '../src/main/agents/childRunner';
-import { aborterFor, buildBundle, releaseAborter, runHeadless } from '../src/main/agents/headless';
+import { aborterFor, buildBundle, parseStrictResponse, releaseAborter, runHeadless } from '../src/main/agents/headless';
 import { claudeCodeAdapter } from '../src/main/agents/claudeCode';
 import { codexAdapter } from '../src/main/agents/codex';
 import { geminiAdapter } from '../src/main/agents/gemini';
 import { cursorAgentAdapter } from '../src/main/agents/cursorAgent';
 import { opencodeAdapter } from '../src/main/agents/opencode';
 import { antigravityAdapter } from '../src/main/agents/antigravity';
+import { qwenAdapter } from '../src/main/agents/qwen';
 import { contractMarkdown } from '../src/main/orchestrator/prompts';
 import { taskContractSchema, type TaskContract } from '../src/shared/contracts';
 import type { AgentAdapter, AdapterContext } from '../src/main/agents/base';
 
 const { runChild: realRunChild } = await vi.importActual<typeof import('../src/main/agents/childRunner')>('../src/main/agents/childRunner');
 const success = { stdout: 'Reviewed the task.', stderr: '', exitCode: 0, timedOut: false, cancelled: false };
-const adapters = [claudeCodeAdapter, codexAdapter, geminiAdapter, cursorAgentAdapter, opencodeAdapter, antigravityAdapter];
+const adapters = [claudeCodeAdapter, codexAdapter, geminiAdapter, cursorAgentAdapter, opencodeAdapter, antigravityAdapter, qwenAdapter];
 const roles = ['research', 'plan', 'review', 'deliver', 'execute', 'test'] as const;
 const roots: string[] = [];
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -74,6 +75,7 @@ async function contextFor(adapter: AgentAdapter, role: TaskContract['role'] = 'p
       runId: root, stageId: role, role, agentId: adapter.id,
       goal: 'Audit authentication — résumé\nPreserve permissions and scope.',
       projectPath: root, projectName: 'A project with spaces',
+      strictOutput: { path: join(root, `result-${role}-1.json`), hint: 'Return one JSON object.' },
       constraints: { allowedFiles: ['src/**'], forbiddenFiles: ['.env*'], acceptanceCommands: ['pnpm test'], timeoutMinutes: 2 }
     })
   };
@@ -92,7 +94,7 @@ describe.each(adapters)('$name headless dispatch', (adapter) => {
     const [command, args, options] = vi.mocked(runChild).mock.calls[0];
     const mdPath = join(context.workdir, `contract-${role}.md`);
     const readOnly = !['execute', 'test'].includes(role);
-    expect(command).toBe({ 'claude-code': 'claude', codex: 'codex', 'gemini-cli': 'gemini', 'cursor-agent': 'cursor-agent', opencode: 'opencode', antigravity: 'agy' }[adapter.id]);
+    expect(command).toBe({ 'claude-code': 'claude', codex: 'codex', 'gemini-cli': 'gemini', 'cursor-agent': 'cursor-agent', opencode: 'opencode', antigravity: 'agy', 'qwen-code': 'qwen' }[adapter.id]);
     expect(options.cwd).toBe(context.cwd);
     expect(options.timeoutMs).toBe(120_000);
     expect(options.cancelSignal?.aborted).toBe(false);
@@ -100,7 +102,7 @@ describe.each(adapters)('$name headless dispatch', (adapter) => {
     expect(args).not.toContain('CONTRACT_PROMPT');
     expect(args.join(' ')).not.toMatch(/bypassPermissions|--yolo|--force|--full-auto|danger-full-access|dangerously/);
     expect(await readFile(mdPath, 'utf8')).toBe(contractMarkdown(context.contract));
-    if (['claude-code', 'codex', 'gemini-cli'].includes(adapter.id)) {
+    if (['claude-code', 'codex', 'gemini-cli', 'qwen-code'].includes(adapter.id)) {
       expect(options.stdinPayload).toBe(contractMarkdown(context.contract));
       expect(options.stdinPayload).toContain('# Output contract (mandatory)');
       expect(options.stdinPayload).not.toBe(mdPath);
@@ -126,6 +128,12 @@ describe.each(adapters)('$name headless dispatch', (adapter) => {
     if (adapter.id === 'gemini-cli') {
       expect(args[args.indexOf('--approval-mode') + 1]).toBe(readOnly ? 'plan' : 'auto_edit');
       expect(args).toContain('-p');
+      expect(args).toContain('json');
+    }
+    if (adapter.id === 'qwen-code') {
+      expect(args[args.indexOf('--approval-mode') + 1]).toBe(readOnly ? 'plan' : 'auto');
+      expect(args).toContain('--output-format');
+      expect(args.at(-1)).toContain('stdin');
     }
     if (adapter.id === 'antigravity') {
       expect(args[args.indexOf('--output-format') + 1]).toBe('stream-json');
@@ -140,6 +148,8 @@ describe.each(adapters)('$name headless dispatch', (adapter) => {
       const mode = readOnly ? 'plan' : 'build';
       expect(args[args.indexOf('--agent') + 1]).toBe(mode);
       expect(args[args.indexOf('--file') + 1]).toBe(mdPath);
+      expect(args).toContain('--format');
+      expect(args[args.indexOf('--format') + 1]).toBe('json');
       const permission = JSON.parse(options.env!.OPENCODE_PERMISSION!);
       expect(permission).toMatchObject({ '*': 'deny', read: 'allow', glob: 'allow', grep: 'allow' });
       expect(permission.edit).toBe(readOnly ? 'deny' : 'allow');
@@ -154,6 +164,45 @@ describe.each(adapters)('$name headless dispatch', (adapter) => {
 });
 
 describe('headless lifecycle and outcomes', () => {
+  it('parses strict JSON final responses and lets the host persist them outside the agent sandbox', async () => {
+    const result = { status: 'completed', summary: 'Research found two relevant constraints.', filesChanged: [], assumptions: [], unresolved: [], confidence: 'high' };
+    expect(parseStrictResponse(JSON.stringify(result))).toEqual(result);
+    expect(parseStrictResponse(`Result:\n\`\`\`json\n${JSON.stringify(result)}\n\`\`\``)).toEqual(result);
+    expect(parseStrictResponse('Could not write the requested file because permission was denied.')).toBeUndefined();
+
+    const context = await contextFor(codexAdapter, 'research');
+    const stdout = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(result) } });
+    vi.mocked(runChild).mockResolvedValueOnce({ ...success, stdout });
+    await codexAdapter.collect(await codexAdapter.start(context));
+    expect(JSON.parse(await readFile(context.contract.strictOutput!.path, 'utf8'))).toEqual(result);
+  });
+
+  it('streams bounded redacted output and writes a per-attempt session log', async () => {
+    const base = await contextFor(opencodeAdapter);
+    const sessionLogPath = join(base.workdir, 'session-plan-1.log');
+    const sessionEvents: Array<{ type: string; pid?: number; stream?: string; text?: string }> = [];
+    const context: AdapterContext = {
+      ...base,
+      sessionLogPath,
+      onSessionEvent: (event) => sessionEvents.push(event)
+    };
+    vi.mocked(runChild).mockImplementationOnce(async (_command, _args, options) => {
+      options.onSpawn?.(4242);
+      options.onOutput?.('stdout', 'Research is running.\napi_key=secret-value-123\n');
+      options.onOutput?.('stderr', 'warning: one source timed out\n');
+      return { ...success, stdout: 'Research is running.\napi_key=secret-value-123\n', stderr: 'warning: one source timed out\n' };
+    });
+
+    await opencodeAdapter.collect(await opencodeAdapter.start(context));
+    const log = await readFile(sessionLogPath, 'utf8');
+    expect(sessionEvents.map((event) => event.type)).toEqual(['started', 'output', 'output', 'output', 'finished']);
+    expect(sessionEvents[0].pid).toBe(4242);
+    expect(log).toContain('Research is running.');
+    expect(log).toContain('[REDACTED]');
+    expect(log).not.toContain('secret-value-123');
+    expect(log).toContain('stderr> warning: one source timed out');
+  });
+
   it('keeps a large Unicode contract out of argv', async () => {
     const context = await contextFor(codexAdapter);
     context.contract.goal = 'Résumé / 安全\n'.repeat(10_000);

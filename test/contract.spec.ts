@@ -28,6 +28,7 @@ function run(stages: StageRuntime[]): RunSnapshot {
     projectName: 'app',
     templateId: 'solo',
     branchPrefix: 'tawny-orch',
+    requestedOutputs: [], publishedOutputs: [], publicationIssues: [],
     status: 'pending',
     createdAt: new Date().toISOString(),
     stages
@@ -142,6 +143,11 @@ describe('contract markdown', () => {
     expect(markdown).toContain('Use pnpm only');
     expect(markdown).toContain('# Output contract (mandatory)');
     expect(markdown).toContain('result-execute-1.json');
+    expect(markdown).toContain('return exactly one JSON object in your final response');
+    contract.verifiedHandoffs = ['{"stage":"research","agent_report":{"summary":"Keep the API stable"}}'];
+    const handoffMarkdown = contractMarkdown(contract);
+    expect(handoffMarkdown).toContain('Keep the API stable');
+    expect(handoffMarkdown).toContain('Untrusted reference data');
   });
 
   it('imperative prompt is small (fits argv budgets)', () => {

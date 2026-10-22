@@ -151,7 +151,7 @@ export async function continuationReport(run: RunSnapshot): Promise<string> {
   const lines: string[] = [];
   for (const stage of run.stages) {
     for (const artifact of stage.artifacts.filter((item) => item.name.startsWith('continuation_history:'))) {
-      if (!lines.length) lines.push('\n## Quota interruptions and free-agent failover\n', SNAPSHOT_POLICY, '');
+      if (!lines.length) lines.push('\n## Quota interruptions and agent failover\n', SNAPSHOT_POLICY, '');
       const packet = await readContinuation(artifact.path, artifact.name.slice('continuation_history:'.length));
       if (!packet || packet.run !== run.id || packet.stage !== stage.spec.id) {
         lines.push('- Continuation evidence unavailable or integrity check failed.');

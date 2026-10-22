@@ -6,10 +6,12 @@ import { z } from 'zod';
 import type { ProjectAttachment, ProjectConfig } from '../shared/contracts';
 import { projectAttachmentSchema, projectConfigSchema } from '../shared/contracts';
 import { atomicWriteFile, isMissingFile, withStorageLock } from './storage';
+import { hideProjectMetadata, projectMetadataDirectory } from './projectMetadata';
 
 const attachedFile = (): string => join(app.getPath('userData'), 'orchestrator', 'attached-project.json');
 const registryFile = (): string => join(app.getPath('userData'), 'orchestrator', 'projects.json');
-const projectConfigFile = (projectPath: string): string => join(projectPath, '.tawny-orch', 'config.json');
+const projectConfigFile = (projectPath: string): string => join(projectMetadataDirectory(app.getPath('userData'), projectPath), 'config.json');
+const legacyProjectConfigFile = (projectPath: string): string => join(projectPath, '.tawny-orch', 'config.json');
 const validPath = z.string().min(1).refine((path) => isAbsolute(path) && !path.includes('\0'));
 const attachmentSchema = projectAttachmentSchema.extend({ path: validPath, name: z.string().min(1) });
 const aliasSchema = z.string().trim().min(1).refine((alias) => !/[\\/:\x00-\x1f]/.test(alias) && alias !== '.' && alias !== '..', 'Aliases cannot be paths');
@@ -125,7 +127,11 @@ export async function readProjectConfig(projectPath: string): Promise<ProjectCon
   try {
     return projectConfigSchema.parse(JSON.parse(await readFile(projectConfigFile(projectPath), 'utf8')));
   } catch {
-    return projectConfigSchema.parse({});
+    try {
+      const legacy = projectConfigSchema.parse(JSON.parse(await readFile(legacyProjectConfigFile(projectPath), 'utf8')));
+      hideProjectMetadata(projectPath);
+      return legacy;
+    } catch { return projectConfigSchema.parse({}); }
   }
 }
 

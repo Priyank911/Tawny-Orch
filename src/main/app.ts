@@ -1,8 +1,8 @@
 import {
-  app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, screen, Tray
+  app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, screen, shell, Tray
 } from 'electron';
-import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { isAbsolute, join, relative } from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createActor } from 'xstate';
 import { overlayState, pipelineMachine } from './pipeline/machine';
@@ -10,8 +10,10 @@ import { parseVoiceCommand } from './pipeline/voice';
 import { resolveVoiceProject } from './pipeline/projectResolver';
 import { transcribeWithGroq } from './providers/groqWhisper';
 import { detectAgents } from './detect/agents';
+import { runDir } from './orchestrator/store';
 import { BASE_TEMPLATES, templateById } from './orchestrator/templates';
 import { saveAttachedProject } from './projectStore';
+import { openAgentTerminal } from './agentTerminal';
 import { setEventSink } from './orchestrator/events';
 import { createDaemonClient } from './daemon/client';
 import { appSettingsSchema, stageSpecSchema } from '../shared/contracts';
@@ -56,7 +58,6 @@ if (!hasSingleInstanceLock) {
 const userDataDir = (): string => app.getPath('userData');
 const engine = createDaemonClient({
   userDataDir: userDataDir(),
-  budgetFor: () => ({ ...settings.budget, policy: 'free-only', maxUsd: 0, spentUsd: 0, entitlements: settings.budget?.entitlements ?? {} }),
   onRunUpdate: (run) => updateSnapshotForRun(run),
   onEvent: (event) => mainWindow?.webContents.send('orch:event', event),
   onLog: ({ timestamp: _timestamp, ...entry }) => logPipeline(entry),
@@ -543,6 +544,52 @@ function registerIpc(): void {
   ipcMain.handle('runs:list', async () => engine.listRuns());
   ipcMain.handle('run:get', async (_event, runId: string) => engine.loadRunById(runId));
   ipcMain.handle('run:cancel', async (_event, runId: string) => { await engine.cancelRun(runId); });
+  ipcMain.handle('run:artifact:open', async (_event, input: { runId: string; stageId?: string; name: string }) => {
+    if (!['task_contract', 'agent_session', 'agent_result', 'final_report', 'worktree', 'selected_workspace', 'published_output'].includes(input.name)) throw new Error('This artifact cannot be opened from the run view.');
+    const run = await engine.loadRunById(input.runId);
+    if (!run) throw new Error('This run no longer exists.');
+    const artifact = input.name === 'final_report'
+      ? { path: join(runDir(userDataDir(), run.id), 'final-summary.md') }
+      : run.stages.find((candidate) => candidate.spec.id === input.stageId)?.artifacts.find((candidate) => candidate.name === input.name);
+    if (!artifact) throw new Error('This stage has no matching artifact yet.');
+    let target: string;
+    try { target = await realpath(artifact.path); }
+    catch { throw new Error('This file is not available yet. Wait for the stage or run to finish and try again.'); }
+    if (input.name === 'selected_workspace') {
+      if (target !== await realpath(run.projectPath)) throw new Error('The selected workspace path does not match this run project.');
+    } else if (input.name === 'worktree') {
+      const roots = [join(userDataDir(), 'orchestrator', 'worktrees'), join(run.projectPath, '.tawny-orch', 'worktrees')];
+      const allowed = await Promise.all(roots.map(async (path) => {
+        try {
+          const root = await realpath(path);
+          const withinRoot = relative(root, target);
+          return Boolean(withinRoot && !withinRoot.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && withinRoot !== '..' && !isAbsolute(withinRoot));
+        } catch { return false; }
+      }));
+      if (!allowed.some(Boolean)) {
+        throw new Error('The worktree path is outside Tawny run storage and cannot be opened.');
+      }
+    } else {
+      const root = await realpath(runDir(userDataDir(), run.id));
+      const withinRun = relative(root, target);
+      if (!withinRun || withinRun.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || withinRun === '..' || isAbsolute(withinRun)) {
+        throw new Error('The artifact path is outside this run folder and cannot be opened.');
+      }
+    }
+    const error = await shell.openPath(target);
+    if (error) throw new Error(error);
+  });
+  ipcMain.handle('run:agent-session:open', async (_event, input: { runId: string; stageId: string }) => {
+    const run = await engine.loadRunById(input.runId);
+    const stage = run?.stages.find((candidate) => candidate.spec.id === input.stageId);
+    if (!run || !stage || ['running', 'queued', 'routed', 'retrying'].includes(stage.status)) {
+      throw new Error('Wait for this agent attempt to finish before reopening its saved session.');
+    }
+    const sessionId = stage.artifacts.find((artifact) => artifact.name === 'agent_session_id')?.path;
+    if (!sessionId || !stage.agentId) throw new Error('This agent did not report a resumable session ID. Open its captured session log instead.');
+    const cwd = stage.artifacts.find((artifact) => artifact.name === 'worktree')?.path ?? run.projectPath;
+    await openAgentTerminal(stage.agentId, sessionId, cwd);
+  });
   ipcMain.handle('run:escalate', async (_event, input: { runId: string; stageId: string; agentId?: string | null; manualComplete?: boolean; summary?: string; skip?: boolean }) => {
     return engine.escalateStage({
       runId: input.runId,
@@ -566,11 +613,9 @@ function registerIpc(): void {
   });
   ipcMain.handle('settings:save', async (_event, next: AppSettings) => {
     const validated = appSettingsSchema.parse(next);
-    validated.budget = { ...validated.budget, policy: 'free-only', maxUsd: 0, spentUsd: 0, entitlements: validated.budget?.entitlements ?? {} };
     await saveSettings(validated);
     settings = validated;
-    await engine.updateBudget();
-    logPipeline({ event: 'settings.saved', message: 'Credentials updated.' });
+    logPipeline({ event: 'settings.saved', message: 'App settings updated.' });
   });
 
   ipcMain.handle('app:enter-background', () => {

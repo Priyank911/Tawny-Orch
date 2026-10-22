@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 
 export interface WorkspacePlan {
@@ -20,8 +21,9 @@ export function needsWorktree(role: string, isGit: boolean): boolean {
   return isGit && (role === 'execute' || role === 'test');
 }
 
-export function worktreeDirectory(projectPath: string, runId: string, stageId: string): string {
-  return join(projectPath, '.tawny-orch', 'worktrees', sanitize(runId), sanitize(stageId));
+export function worktreeDirectory(userDataDir: string, projectPath: string, runId: string, stageId: string): string {
+  const projectKey = createHash('sha256').update(resolve(projectPath).toLowerCase()).digest('hex').slice(0, 16);
+  return join(userDataDir, 'orchestrator', 'worktrees', projectKey, sanitize(runId), sanitize(stageId));
 }
 
 export function branchName(branchPrefix: string, runId: string, stageId: string): string {

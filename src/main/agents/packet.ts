@@ -15,7 +15,7 @@ export interface PacketPaths {
 }
 
 export function packetPaths(context: AdapterContext, packetRootDir?: string): PacketPaths {
-  const base = packetRootDir ?? join(context.cwd, '.tawny-orch', 'inbox');
+  const base = packetRootDir ?? join(context.workdir, 'packets');
   const packet = join(base, `${context.contract.runId}-${context.contract.stageId}.md`);
   const sentinelDir = join(base, `${context.contract.runId}-${context.contract.stageId}`);
   return { packet, sentinelDir, sentinel: join(sentinelDir, SENTINEL_FILE) };

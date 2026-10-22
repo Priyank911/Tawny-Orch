@@ -34,8 +34,8 @@ function stagesFor(
 export const BASE_TEMPLATES: PipelineTemplate[] = [
   {
     id: 'solo',
-    name: 'Free-tier pipeline',
-    description: 'Route each stage to eligible free/local tools. Use manual packets when no automatic tool qualifies; verification stays independent.',
+    name: 'Balanced pipeline',
+    description: 'Choose the best detected tool for each stage. Use manual packets when a stage needs your input; verification stays independent.',
     stages: stagesFor({})
   },
   {

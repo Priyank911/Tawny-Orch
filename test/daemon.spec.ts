@@ -6,7 +6,7 @@ import { budgetConfigSchema, type RunSnapshot } from '../src/shared/contracts';
 
 const run = (id = 'run-test', status: RunSnapshot['status'] = 'pending'): RunSnapshot => ({
   id, status, goal: 'Test', projectPath: 'D:/project', projectName: 'project', templateId: 'manual',
-  branchPrefix: 'tawny-orch', createdAt: new Date().toISOString(), stages: [{
+  branchPrefix: 'tawny-orch', requestedOutputs: [], publishedOutputs: [], publicationIssues: [], createdAt: new Date().toISOString(), stages: [{
     spec: { id: 'plan', title: 'Plan', role: 'plan', agentId: 'manual', acceptanceCommands: [], allowedFiles: [], forbiddenFiles: [], retries: 0 },
     status: 'queued', agentId: 'manual', attempt: 1, summary: '', failureReason: '', gates: [], artifacts: []
   }]
@@ -88,61 +88,17 @@ describe('daemon JSON-RPC client and server', () => {
     expect(client.runsRootDir()).toMatch(/orchestrator[\\/]runs$/);
   });
 
-  it('passes live budget settings to configure and dispatch through the engine callback', async () => {
+  it('keeps the legacy budget RPC compatible without attaching policy to the engine', async () => {
     const h = harness();
-    let budget = budgetConfigSchema.parse({ policy: 'free-only' });
-    let cleared = false;
-    const client = clientFor(h, { budgetFor: () => cleared ? undefined : budget });
-    await client.start(); expect(h.deps().budgetFor()).toEqual(budget);
-    budget = budgetConfigSchema.parse({ policy: 'quality-first', maxUsd: 3 });
+    const client = clientFor(h, { budgetFor: () => budgetConfigSchema.parse({ policy: 'free-only' }) });
+    await client.start();
     await client.createRun({ goal: 'Test', projectPath: 'D:/project', stages: [run().stages[0].spec], templateId: 'manual' });
-    expect(h.deps().budgetFor()).toEqual(budget);
-    cleared = true;
+    expect(h.deps().budgetFor).toBeUndefined();
+    expect(h.outbound).toContainEqual(expect.objectContaining({ method: 'createRun' }));
     await client.startRun('run-test');
-    expect(h.deps().budgetFor()).toEqual(budgetConfigSchema.parse({}));
-  });
-
-  it('updates the engine budget callback without dispatching, cancelling, or mutating the old snapshot', async () => {
-    const h = harness();
-    let budget = budgetConfigSchema.parse({ entitlements: { 'claude-code': { kind: 'free', userConfirmed: true } } });
-    const budgetFor = vi.fn(async () => budget);
-    const client = clientFor(h, { budgetFor });
-    await client.start();
-    const previous = h.deps().budgetFor();
-    budget = budgetConfigSchema.parse({ entitlements: { 'claude-code': { kind: 'free', userConfirmed: false } } });
-    budgetFor.mockClear();
-    await expect(client.updateBudget()).resolves.toBeUndefined();
-    expect(budgetFor).toHaveBeenCalledOnce();
-    expect(h.outbound.at(-1)).toMatchObject({ method: 'updateBudget', params: { budget } });
-    expect(h.deps().budgetFor()).toEqual(budget);
-    expect(previous?.entitlements['claude-code'].userConfirmed).toBe(true);
-    expect(h.engine.createRun).not.toHaveBeenCalled();
-    expect(h.engine.startRun).not.toHaveBeenCalled();
-    expect(h.engine.cancelRun).not.toHaveBeenCalled();
-    expect(h.engine.escalateStage).not.toHaveBeenCalled();
-  });
-
-  it('resets a removed settings budget to free-only through updateBudget alone', async () => {
-    const h = harness();
-    let cleared = false;
-    const previous = budgetConfigSchema.parse({ policy: 'quality-first', maxUsd: 10 });
-    const client = clientFor(h, { budgetFor: () => cleared ? undefined : previous });
-    await client.start();
-    cleared = true;
+    expect(h.deps().budgetFor).toBeUndefined();
     await client.updateBudget();
-    expect(h.deps().budgetFor()).toEqual(budgetConfigSchema.parse({}));
-  });
-
-  it('rejects an invalid budget update without replacing the last valid policy', async () => {
-    const h = harness();
-    let budget = budgetConfigSchema.parse({ maxUsd: 10 });
-    const client = clientFor(h, { budgetFor: () => budget });
-    await client.start();
-    const previous = h.deps().budgetFor();
-    budget = { ...budget, maxUsd: -1 };
-    await expect(client.updateBudget()).rejects.toMatchObject({ code: -32602 });
-    expect(h.deps().budgetFor()).toBe(previous);
-    expect(h.deps().budgetFor()?.maxUsd).toBe(10);
+    expect(h.deps().budgetFor).toBeUndefined();
   });
 
   it('requires configuration and a valid budget object for the updateBudget RPC', async () => {

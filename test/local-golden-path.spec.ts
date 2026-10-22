@@ -13,6 +13,7 @@ import { readVerifiedPacket, redactSecrets, safeData, type VerifiedPacket } from
 import { runReport } from '../src/main/orchestrator/report';
 import { runDir, saveRun } from '../src/main/orchestrator/store';
 import { makePacketAdapter } from '../src/main/agents/packet';
+import { memoryFilePath } from '../src/main/orchestrator/memory';
 
 let root: string;
 let project: string;
@@ -68,6 +69,30 @@ async function packet(run: RunSnapshot, index = 0): Promise<VerifiedPacket> {
 }
 
 describe('local golden path: actual implementation workspace', () => {
+  it('creates explicitly requested plan.md in the selected project folder', async () => {
+    action = (ctx) => {
+      expect(ctx.contract.requestedOutputs).toContain('plan.md');
+      writeFileSync(join(ctx.cwd, 'plan.md'), '# Harness plan\n');
+      return { filesChanged: ['plan.md'] };
+    };
+    const run = await engine.createRun({
+      goal: 'Research the harness and create a plan.md with the architecture.',
+      projectPath: project,
+      stages: [spec('execute')],
+      templateId: 'offline'
+    });
+    expect(run.requestedOutputs).toEqual(['plan.md']);
+    const state = await finish(run);
+    expect(state.status).toBe('done');
+    expect(state.publishedOutputs).toEqual([join(project, 'plan.md')]);
+    expect(state.publicationIssues).toEqual([]);
+    expect(readFileSync(join(project, 'plan.md'), 'utf8')).toBe('# Harness plan\n');
+    expect(existsSync(join(project, '.tawny-orch'))).toBe(false);
+    expect(calls[0].cwd).toBe(project);
+    expect(state.stages[0].artifacts.find((artifact) => artifact.name === 'workspace_mode')?.path).toBe('selected-project');
+    expect(await runReport(state)).toContain(`- ${join(project, 'plan.md')}`);
+  });
+
   it('execute, test and review share uncommitted implementation on the current HEAD, not main', async () => {
     git(project, ['checkout', '-b', 'feature/current']);
     writeFileSync(join(project, 'feature.txt'), 'current checkout only');
@@ -81,7 +106,8 @@ describe('local golden path: actual implementation workspace', () => {
         return { filesChanged: ['implementation.txt'] };
       }
       expect(readFileSync(join(ctx.cwd, 'implementation.txt'), 'utf8')).toBe('implemented\n');
-      expect(ctx.contract.strictOutput?.hint).toContain('Read verified handoff:');
+      expect(ctx.contract.verifiedHandoffs.length).toBeGreaterThan(0);
+      expect(ctx.contract.verifiedHandoffs[0]).toContain('"ground_truth"');
       if (ctx.contract.role === 'test') {
         writeFileSync(join(ctx.cwd, 'test.txt'), 'verified implementation');
         return { filesChanged: ['test.txt'] };
@@ -94,38 +120,18 @@ describe('local golden path: actual implementation workspace', () => {
     ]));
     expect(state.status).toBe('done');
     expect(new Set(calls.map((ctx) => ctx.cwd)).size).toBe(1);
-    expect(calls[0].cwd).not.toBe(project);
+    expect(calls[0].cwd).toBe(project);
     expect(calls.every((ctx) => ctx.contract.baseBranch === base)).toBe(true);
-    expect(readFileSync(join(project, 'implementation.txt'), 'utf8')).toBe('base\n');
+    expect(readFileSync(join(project, 'implementation.txt'), 'utf8')).toBe('implemented\n');
     expect((await packet(state, 1)).ground_truth.files_changed).toEqual(['implementation.txt', 'test.txt']);
     expect((await packet(state, 1)).ground_truth.stage_files_changed).toEqual(['test.txt']);
     expect(state.stages[2].gates.find((gate) => gate.gate === 'read_only')?.result).toBe('pass');
   });
 
-  it('fails closed if worktree creation fails; no agent is dispatched on the main checkout', async () => {
-    const run = await create([spec('execute')], 'bad..prefix');
-    await expect(engine.startRun(run.id)).rejects.toThrow();
-    const state = (await engine.loadRunById(run.id))!;
-    expect(calls).toHaveLength(0);
-    expect(state.status).toBe('escalated');
-    expect(state.stages[0].gates[0].result).toBe('error');
-    expect(readFileSync(join(project, 'implementation.txt'), 'utf8')).toBe('base\n');
-  });
-
-  it('rejects an existing ordinary directory rather than treating existence as successful isolation', async () => {
-    const run = await create([spec('execute')]);
-    const target = worktreeDirectory(project, run.id, 'execute');
-    mkdirSync(target, { recursive: true });
-    writeFileSync(join(target, 'do-not-touch.txt'), 'user content');
-    await expect(engine.startRun(run.id)).rejects.toThrow('expected registered run worktree');
-    expect(calls).toHaveLength(0);
-    expect(readFileSync(join(target, 'do-not-touch.txt'), 'utf8')).toBe('user content');
-  });
-
-  it('requires committed git for execute instead of silently editing a non-git project', async () => {
+  it('requires a Git repository for verified direct execute stages', async () => {
     rmSync(join(project, '.git'), { recursive: true, force: true });
     const run = await create([spec('execute')]);
-    await expect(engine.startRun(run.id)).rejects.toThrow('committed git repository');
+    await expect(engine.startRun(run.id)).rejects.toThrow('Git project so Tawny can verify direct workspace changes');
     expect(calls).toHaveLength(0);
   });
 
@@ -252,8 +258,8 @@ describe('verified handoff, contradictions and reporting', () => {
       expect(text).not.toContain(secret);
       expect(text).not.toContain('b'.repeat(30));
     }
-    expect(existsSync(join(project, '.tawny-orch', 'memory.jsonl'))).toBe(true); // Failure memory also remains redacted.
-    expect(readFileSync(join(project, '.tawny-orch', 'memory.jsonl'), 'utf8')).not.toContain(secret);
+    expect(existsSync(memoryFilePath(project, root))).toBe(true); // Failure memory also remains redacted.
+    expect(readFileSync(memoryFilePath(project, root), 'utf8')).not.toContain(secret);
   });
 
   it('scans actual file content even if agent output hides the secret', async () => {
@@ -305,7 +311,7 @@ describe('manual verification and conservative recovery', () => {
     engine = new OrchestratorEngine({ userDataDir: root, onRunUpdate() {}, adapterFor: () => makePacketAdapter({ id: 'fake-local', name: 'Offline human', tier: 'C', pollMs: 10 }) });
     const run = await create([spec('plan')]);
     const driving = engine.startRun(run.id);
-    const inbox = join(project, '.tawny-orch', 'inbox', `${run.id}-plan.md`);
+    const inbox = join(runDir(root, run.id), 'packets', `${run.id}-plan.md`);
     await waitFor(() => existsSync(inbox));
     writeFileSync(join(project, 'implementation.txt'), 'manual forbidden edit\n');
     await engine.escalateStage({ runId: run.id, stageId: 'plan', manualComplete: true, manualSummary: 'I am done.' });
@@ -318,7 +324,8 @@ describe('manual verification and conservative recovery', () => {
 
   it('preserves interrupted workspace and attempt count; only explicit reassignment resumes it', async () => {
     const run = await create([spec('execute')]);
-    const target = worktreeDirectory(project, run.id, 'execute');
+    const target = worktreeDirectory(root, project, run.id, 'execute');
+    expect(target).toContain(join(root, 'orchestrator', 'worktrees'));
     const branch = branchName(run.branchPrefix, run.id, 'execute');
     const base = git(project, ['rev-parse', 'HEAD']).trim();
     git(project, ['worktree', 'add', '-b', branch, target, base]);

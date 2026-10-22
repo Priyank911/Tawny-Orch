@@ -1,14 +1,13 @@
 import { StrictMode, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  ArrowRight, Ban, Bot, Check, ChevronDown, ChevronRight, FolderOpen,
-  Home as HomeIcon, Mic, RefreshCw, ScrollText, Settings2, ShieldCheck, Square, Workflow, X
+  ArrowRight, Ban, Bot, Check, ChevronDown, ChevronRight, ExternalLink, FolderOpen,
+  Home as HomeIcon, Mic, RefreshCw, ScrollText, Settings2, ShieldCheck, Square, Terminal, Workflow, X
 } from 'lucide-react';
 import type {
-  AgentEntitlement, AgentStatus, AppSettings, OrchEvent, OverlaySnapshot, PipelineLog,
+  AgentStatus, AppSettings, OrchEvent, OverlaySnapshot, PipelineLog,
   PipelineTemplate, ProjectAttachment, ProjectConfig, RunSnapshot, StageSpec, StageStatus
 } from '../shared/contracts';
-import { budgetConfigSchema } from '../shared/contracts';
 import './styles.css';
 
 const HOTKEY_LABEL = 'Ctrl + Alt + Space';
@@ -80,14 +79,10 @@ function effectiveConfig(stored: ProjectConfig, templates: PipelineTemplate[]): 
   return { ...stored, stages: template?.stages.map((stage) => ({ ...stage })) ?? [] };
 }
 
-function freeOnlyBudget(settings: AppSettings): NonNullable<AppSettings['budget']> {
-  return budgetConfigSchema.parse({ ...settings.budget, policy: 'free-only', maxUsd: 0 });
-}
-
-function FreeOnlyNotice(): ReactElement {
-  return <div className="free-only-notice"><ShieldCheck size={18} aria-hidden="true" /><div>
-    <strong>Free-only by default · $0 dispatch budget</strong>
-    <p>Automatic agents need your saved free/local confirmation for the current model. Without eligible automatic access, routing can use an eligible manual slot or stop for resolution. Confirm access in Settings; detection is not proof of free usage.</p>
+function ProviderNotice(): ReactElement {
+  return <div className="provider-notice"><ShieldCheck size={18} aria-hidden="true" /><div>
+    <strong>Your CLI, your configured model</strong>
+    <p>Tawny launches the selected installed agent with its existing sign-in and model settings. Provider usage and charges follow that agent's account.</p>
   </div></div>;
 }
 
@@ -306,9 +301,9 @@ function App(): ReactElement {
           latestRun={latestRun} hotkey={hotkey} onPipeline={() => navigate('pipeline')}
           onRun={(id) => { setOpenRunId(id); navigate('runs'); }} /> : null}
         {page === 'pipeline' ? <PipelineEditor project={project} templates={templates} config={config} setConfig={setConfig} agents={agents} /> : null}
-        {page === 'runs' ? <RunsPage runs={runs} events={events} openRunId={openRunId} setOpenRunId={setOpenRunId}
+        {page === 'runs' ? <RunsPage runs={runs} events={events} logs={logs} openRunId={openRunId} setOpenRunId={setOpenRunId}
           agents={agents} loaded={loaded} onStart={() => navigate('home')} refreshing={pending !== null} /> : null}
-        {page === 'settings' ? <SettingsPage settings={settings} setSettings={setSettings} logs={logs} agents={agents} /> : null}
+        {page === 'settings' ? <SettingsPage settings={settings} setSettings={setSettings} logs={logs} /> : null}
         <footer className="workspace-footer"><span>Tawny Orch · Built around your project folder</span><span>Provider access, limits and charges are separate.</span></footer>
       </div>
     </main>
@@ -374,7 +369,7 @@ function HomePage(props: {
       action={<button className="btn" onClick={attach} disabled={!loaded || pending !== null}><FolderOpen size={15} />{project ? 'Change folder' : 'Attach project'}</button>}>
       {project ? <span className="project-path">{project.path}</span> : 'Attach a project. Shape the handoffs. Review before you run.'}
     </PageHeading>
-    <FreeOnlyNotice />
+    <ProviderNotice />
     <section className="card rail-panel" aria-labelledby="handoff-title">
       <div className="section-top"><div><span className="eyebrow">THE HANDOFF RAIL</span><h2 id="handoff-title">One goal. A visible path to delivery.</h2></div>
         <button className="btn small" onClick={onPipeline}>Edit pipeline <ArrowRight size={14} /></button></div>
@@ -424,7 +419,7 @@ function HomePage(props: {
         <button className="btn small" disabled={pending !== null || !loaded} onClick={() => {
           void perform('Detect terminals', async () => setAgents(await window.tawnyOrch.detectAgents()));
         }}><RefreshCw size={14} />{pending === 'Detect terminals' ? 'Detecting…' : 'Detect again'}</button></div>
-      <p className="card-sub">Use your existing access, including eligible free tiers. Detection does not verify sign-in, quota or price. Confirm those in each CLI.</p>
+      <p className="card-sub">Tawny detects installed agent commands and runs them using their current CLI configuration. Detection reports installation and version; it does not test account access or provider usage.</p>
       <div className="agent-grid">{agents.map((agent) => <div className="agent-tile" key={agent.id}>
         <div className="section-top"><strong><Bot size={16} />{agent.label}</strong><span className={`chip ${agent.detected ? 'green' : 'slate'}`}>{agent.detected ? 'Detected' : agent.health === 'probe_failed' ? 'Probe failed' : 'Not detected'}</span></div>
         <span className="utility">{agent.version || 'Version not reported'}</span>
@@ -455,13 +450,13 @@ function ReviewDialog({ review, pending, onClose, onConfirm }: { review: Review;
     onCancel={(event) => { event.preventDefault(); if (!pending) onClose(); }}>
     <span className="eyebrow">BEFORE THE TERMINALS START</span><h2 id="review-title">Review this run.</h2>
     <p id="review-description" className="card-sub">Confirm the exact folder, brief and stage order. Dispatch may modify project files and use provider allowances.</p>
-        <FreeOnlyNotice />
+        <ProviderNotice />
     <dl className="review-facts"><dt>Project folder</dt><dd><strong>{review.project.name}</strong><code>{review.project.path}</code></dd>
       <dt>Goal</dt><dd className="review-goal">{review.goal}</dd><dt>Pipeline</dt><dd>{review.config.templateId}</dd></dl>
     <HandoffRail stages={review.config.stages} />
     <div className="review-checks">{review.config.stages.map((stage) => <div key={stage.id}><strong>{stage.title}</strong>
       <span>{stage.acceptanceCommands.length ? stage.acceptanceCommands.join(' · ') : 'No acceptance command configured'}</span></div>)}</div>
-    <p className="info-note">Local-first is not offline-only. Agent CLIs may send code and your goal to their providers. Free-tier eligibility and remaining quota are not verified here.</p>
+    <p className="info-note">Local-first is not offline-only. Agent CLIs may send code and your goal to their configured providers and may incur usage charges. Review your model and provider settings in that CLI before dispatch.</p>
     {failure ? <div className="error-notice" role="alert"><div><strong>{failure.title}</strong><p>{failure.detail}</p></div></div> : null}
     <div className="dialog-actions"><button ref={backButtonRef} className="btn" disabled={pending} onClick={onClose}>Back to goal</button>
       <button className="btn primary" disabled={pending} onClick={onConfirm}>{pending ? 'Dispatching…' : 'Confirm & dispatch'}<ArrowRight size={15} /></button></div>
@@ -479,12 +474,23 @@ function PipelineEditor({ project, templates, config, setConfig, agents }: {
   function updateStage(id: string, patch: Partial<StageSpec>): void {
     if (config) change({ ...config, stages: config.stages.map((stage) => stage.id === id ? { ...stage, ...patch } : stage) });
   }
+  function addStage(role: StageSpec['role']): void {
+    if (!config) return;
+    const base = role.replace(/[^a-z0-9_-]/gi, '-');
+    let id = base;
+    let suffix = 2;
+    while (config.stages.some((stage) => stage.id.toLowerCase() === id.toLowerCase())) id = `${base}-${suffix++}`;
+    const title = role === 'deliver' ? 'Deliver summary' : `${role[0].toUpperCase()}${role.slice(1)}`;
+    change({ ...config, templateId: '__custom__', stages: [...config.stages, {
+      id, title, role, agentId: null, acceptanceCommands: [], allowedFiles: [], forbiddenFiles: [], retries: 1
+    }] });
+  }
   return <>
     <PageHeading eyebrow="MAKE THE HANDOFFS EXPLICIT" title="Your delivery pipeline.">Set the stage order, choose tools and define the checks that matter to this project.</PageHeading>
     {!project ? <EmptyState title="Start with a project folder." description="Attach a folder in Cockpit before editing its pipeline." />
       : !config ? <div className="card" role="status">Waiting for the project pipeline. If loading failed, reattach the folder in Cockpit.</div> : <section className="card">
         <div className="section-top"><div><h2>{project.name}</h2><p className="card-sub">Changes stay in this editor until you save. A run review reads the saved pipeline.</p></div>
-          <span className="utility">.tawny-orch/config.json</span></div>
+          <span className="utility">Project pipeline settings · stored in a hidden Tawny metadata folder</span></div>
         <div className="pipeline-toolbar"><div><label className="field-label" htmlFor="pipeline-template">Start from a template</label>
           <select id="pipeline-template" className="select-input" disabled={pending !== null}
             value={templates.some((item) => item.id === config.templateId) ? config.templateId : '__custom__'}
@@ -494,19 +500,28 @@ function PipelineEditor({ project, templates, config, setConfig, agents }: {
         {config.stages.length ? <HandoffRail stages={config.stages} /> : <p className="empty-inline">Choose a template to add stages.</p>}
         <div className="stage-editors">{config.stages.map((stage, index) => <fieldset className="stage-editor" key={stage.id} disabled={pending !== null}>
           <legend><span className="utility">{String(index + 1).padStart(2, '0')}</span> {stage.title || stage.role}</legend>
-          <div className="stage-fields"><div><label className="field-label" htmlFor={`agent-${stage.id}`}>Agent terminal</label>
+          <button className="btn small subtle remove-stage" disabled={pending !== null || config.stages.length <= 1} aria-label={`Remove ${stage.title || stage.role} stage`}
+            onClick={() => change({ ...config, templateId: '__custom__', stages: config.stages.filter((candidate) => candidate.id !== stage.id) })}><X size={13} />Remove stage</button>
+          <div className="stage-fields"><div><label className="field-label" htmlFor={`agent-${stage.id}`}>Agent terminal · {stage.role}</label>
             <select id={`agent-${stage.id}`} className="select-input" value={stage.agentId ?? '__auto__'} onChange={(event) => updateStage(stage.id, { agentId: event.target.value === '__auto__' ? null : event.target.value })}>
               <option value="__auto__">Router selects</option>
-              {stage.agentId && !agents.some((agent) => agent.id === stage.agentId) ? <option value={stage.agentId}>{stage.agentId} (not in inventory)</option> : null}
-              {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.label}{agent.detected ? '' : ' (not detected)'}</option>)}
+              {stage.agentId && !agents.some((agent) => agent.id === stage.agentId && agent.roles.includes(stage.role)) ? <option value={stage.agentId}>{agents.find((agent) => agent.id === stage.agentId)?.label ?? stage.agentId} (incompatible with {stage.role})</option> : null}
+              {agents.filter((agent) => agent.roles.includes(stage.role)).map((agent) => <option key={agent.id} value={agent.id}>{agent.label}{agent.detected ? '' : ' (not detected)'}</option>)}
             </select></div><div><label className="field-label" htmlFor={`retry-${stage.id}`}>Retries before escalation</label>
               <input id={`retry-${stage.id}`} type="number" min={0} max={5} step={1} className="text-input" value={stage.retries}
                 onChange={(event) => updateStage(stage.id, { retries: Math.max(0, Math.min(5, Math.floor(Number(event.target.value) || 0))) })} /></div></div>
           <label className="field-label" htmlFor={`checks-${stage.id}`}>Acceptance commands · one per line</label>
           <textarea id={`checks-${stage.id}`} className="text-input command-input" rows={2} value={stage.acceptanceCommands.join('\n')}
             placeholder="For example: pnpm test" onChange={(event) => updateStage(stage.id, { acceptanceCommands: event.target.value.split('\n') })} />
-          <p className="helper">These commands execute in the project. Only add commands you trust. No command means no command-based acceptance check.</p>
+          <p className="helper">Only agents that declare support for this role are selectable. Access is checked again before dispatch. These commands execute in the project; only add commands you trust.</p>
         </fieldset>)}</div>
+        <div className="pipeline-add-row"><label className="field-label" htmlFor="add-pipeline-stage">Optional handoff</label>
+          <select id="add-pipeline-stage" className="select-input" value="" disabled={pending !== null}
+            onChange={(event) => { if (event.target.value) addStage(event.target.value as StageSpec['role']); }}>
+            <option value="">Add a stage…</option><option value="research">Research</option><option value="plan">Plan</option>
+            <option value="execute">Execute</option><option value="test">Test</option><option value="review">Review</option><option value="deliver">Deliver summary</option>
+          </select><p className="helper">Remove Research or any other stage when this goal does not need it. Stages can also be skipped from a running run.</p>
+        </div>
         <div className="save-bar"><span className="helper" role="status">{saved ? 'Pipeline saved to this project.' : 'Save before reviewing a new run.'}</span>
           <button className="btn primary" disabled={pending !== null || !config.stages.length} onClick={() => {
             void perform('Save pipeline', async () => { await window.tawnyOrch.saveProjectConfig(project.path, {
@@ -521,8 +536,8 @@ function EmptyState({ title, description, action }: { title: string; description
   return <div className="card empty-state"><span className="empty-icon"><Workflow size={25} /></span><h2>{title}</h2><p>{description}</p>{action}</div>;
 }
 
-function RunsPage({ runs, events, openRunId, setOpenRunId, agents, loaded, onStart, refreshing }: {
-  runs: RunSnapshot[]; events: OrchEvent[]; openRunId: string | undefined; setOpenRunId: (id: string | undefined) => void;
+function RunsPage({ runs, events, logs, openRunId, setOpenRunId, agents, loaded, onStart, refreshing }: {
+  runs: RunSnapshot[]; events: OrchEvent[]; logs: PipelineLog[]; openRunId: string | undefined; setOpenRunId: (id: string | undefined) => void;
   agents: AgentStatus[]; loaded: boolean; onStart: () => void; refreshing: boolean;
 }): ReactElement {
   return <>
@@ -531,16 +546,18 @@ function RunsPage({ runs, events, openRunId, setOpenRunId, agents, loaded, onSta
     {!runs.length ? <EmptyState title={loaded ? 'No recorded runs yet.' : 'Loading recorded runs…'} description="Start with a goal in Cockpit. Routing, checks and failures will appear here as they are reported."
       action={<button className="btn primary" onClick={onStart}>Write a goal <ArrowRight size={15} /></button>} />
       : <div className="run-list">{runs.map((run) => <RunRow key={run.id} run={run} open={openRunId === run.id}
-        onToggle={() => setOpenRunId(openRunId === run.id ? undefined : run.id)} agents={agents} events={events.filter((event) => event.runId === run.id).slice(-60)} />)}</div>}
+        onToggle={() => setOpenRunId(openRunId === run.id ? undefined : run.id)} agents={agents} logs={logs.filter((entry) => entry.runId === run.id).slice(-200)}
+        events={events.filter((event) => event.runId === run.id).slice(-60)} />)}</div>}
   </>;
 }
 
-function RunRow({ run, open, onToggle, agents, events }: {
-  run: RunSnapshot; open: boolean; onToggle: () => void; agents: AgentStatus[]; events: OrchEvent[];
+function RunRow({ run, open, onToggle, agents, logs, events }: {
+  run: RunSnapshot; open: boolean; onToggle: () => void; agents: AgentStatus[]; logs: PipelineLog[]; events: OrchEvent[];
 }): ReactElement {
   const [pending, perform] = useOperation();
   const [reassign, setReassign] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [openSessions, setOpenSessions] = useState<Record<string, boolean>>({});
   const chip = RUN_STATUS[run.status] ?? { label: run.status, cls: 'slate' };
   function escalate(stageId: string, action: 'assign' | 'complete' | 'skip'): void {
     void perform('Resolve stage', async () => { await window.tawnyOrch.escalateStage({ runId: run.id, stageId,
@@ -552,15 +569,65 @@ function RunRow({ run, open, onToggle, agents, events }: {
       <span className={`chip ${chip.cls}`}>{chip.label}</span><span className="goal"><strong>{run.goal}</strong>
         <span>{run.projectName || run.projectPath} · {new Date(run.createdAt).toLocaleString()} · {run.stages.length} stages</span></span>
       {open ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>
+      {['done', 'escalated', 'failed', 'cancelled'].includes(run.status) ? <button className="btn small subtle" disabled={pending !== null} onClick={() => {
+        void perform('Open final report', async () => window.tawnyOrch.openRunArtifact({ runId: run.id, name: 'final_report' }));
+      }}><ExternalLink size={13} />Open report</button> : null}
       {['pending', 'running', 'escalated'].includes(run.status) ? <button className="btn small danger" disabled={pending !== null} onClick={() => {
         void perform('Cancel run', async () => window.tawnyOrch.cancelRun(run.id));
       }}><Ban size={14} />{pending === 'Cancel run' ? 'Cancelling…' : 'Cancel run'}</button> : null}</div>
     <div id={`run-${run.id}`} hidden={!open} className="run-detail">
-      <div className="run-facts"><code>{run.projectPath}</code><span className="utility">Run {run.id}</span></div>
+      <div className="run-facts"><code>{run.projectPath}</code><span className="utility">{run.stages.some((stage) => stage.artifacts.some((artifact) => artifact.name === 'selected_workspace')) ? 'Selected folder · changes apply here' : 'Run'} · {run.id}</span></div>
       <HandoffRail stages={[]} run={run} />
       <div className="stage-track">{run.stages.map((stage) => <section className="stage-line" key={stage.spec.id} aria-labelledby={`title-${run.id}-${stage.spec.id}`}>
         <div className="section-top"><div><h3 id={`title-${run.id}-${stage.spec.id}`}>{stage.spec.title}</h3><span className="utility">{stage.agentId ?? stage.spec.agentId ?? 'Router selects'} · attempt {stage.attempt}</span></div>
           <span className={`chip ${STATUS_CHIP[stage.status].cls}`}>{STATUS_CHIP[stage.status].label}</span></div>
+        <div className="stage-controls">
+          {stage.artifacts.some((artifact) => artifact.name === 'task_contract') ? <button className="btn small subtle" disabled={pending !== null}
+            onClick={() => { void perform('Open task contract', async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: 'task_contract' })); }}>
+            <ExternalLink size={13} />Open task contract</button> : null}
+          {stage.artifacts.some((artifact) => artifact.name === 'worktree') ? <button className="btn small subtle" disabled={pending !== null}
+            onClick={() => { void perform('Open run workspace', async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: 'worktree' })); }}>
+            <FolderOpen size={13} />Open run workspace</button> : null}
+          {stage.artifacts.some((artifact) => artifact.name === 'selected_workspace') ? <button className="btn small subtle" disabled={pending !== null}
+            onClick={() => { void perform('Open selected project folder', async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: 'selected_workspace' })); }}>
+            <FolderOpen size={13} />Open selected project folder</button> : null}
+          {!['passed', 'skipped', 'cancelled', 'failed'].includes(stage.status) ? <button className="btn small subtle" disabled={pending !== null}
+            onClick={() => escalate(stage.spec.id, 'skip')}>Skip stage</button> : null}
+        </div>
+        {stage.artifacts.some((artifact) => artifact.name === 'agent_session') ? (() => {
+          const sessionEvents = logs.filter((entry) => entry.data?.stageId === stage.spec.id && entry.data?.attempt === String(stage.attempt) && entry.event.startsWith('agent.session.'));
+          const started = [...sessionEvents].reverse().find((entry) => entry.event === 'agent.session.started');
+          const finished = [...sessionEvents].reverse().find((entry) => entry.event === 'agent.session.finished');
+          const live = stage.status === 'running' && (!finished || (started !== undefined && started.timestamp > finished.timestamp));
+          const output = sessionEvents.filter((entry) => entry.event === 'agent.session.output').slice(-80);
+          const expanded = openSessions[stage.spec.id] ?? stage.status === 'running';
+          return <details className="agent-session" open={expanded} onToggle={(event) => {
+            const next = event.currentTarget.open;
+            setOpenSessions((current) => current[stage.spec.id] === next ? current : { ...current, [stage.spec.id]: next });
+          }}>
+            <summary><Terminal size={14} />{live ? 'Live agent session' : 'Agent session output'}
+              <span className={`chip ${live ? 'blue' : finished?.data?.cancelled === 'true' ? 'slate' : 'green'}`}>{live ? started ? 'Process running' : 'Starting' : finished?.data?.cancelled === 'true' ? 'Stopped' : finished ? 'Exited' : 'No process output yet'}</span>
+              {started?.data?.pid ? <code>PID {started.data.pid}</code> : null}</summary>
+            <div className="session-content">
+              <div className="session-meta"><span>{started?.data?.cwd ?? run.projectPath}</span>
+                {stage.artifacts.some((artifact) => artifact.name === 'agent_session_id') && ['codex', 'opencode', 'gemini-cli', 'claude-code'].includes(stage.agentId ?? '') ? <button className="btn small subtle" disabled={pending !== null || live} onClick={(event) => {
+                  event.preventDefault();
+                  void perform('Resume agent session in terminal', async () => window.tawnyOrch.openAgentSession({ runId: run.id, stageId: stage.spec.id }));
+                }}><Terminal size={12} />Resume agent session</button> : null}
+                <button className="btn small subtle" disabled={pending !== null} onClick={(event) => {
+                  event.preventDefault();
+                  void perform('Open session log', async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: 'agent_session' }));
+                }}><ExternalLink size={13} />Open session log</button></div>
+              {!output.length ? <p className="helper">{live ? 'The process is active. Waiting for its first output line…' : 'No output was captured for this attempt.'}</p> :
+                <div className="session-output" role="region" aria-label={`${stage.spec.title} agent session output`} aria-live="off" tabIndex={0}>
+                  {output.map((entry, index) => <div className={`session-line ${entry.data?.stream === 'stderr' ? 'stderr' : ''}`} key={`${entry.timestamp}-${index}`}>
+                    <time>{new Date(entry.timestamp).toLocaleTimeString()}</time><span>{entry.data?.stream ?? 'stdout'}›</span><code>{entry.message}</code>
+                  </div>)}
+                </div>}
+              <p className="helper">Output is captured while the CLI runs. After exit, Resume agent session opens the provider’s saved conversation in a new terminal when that provider exposes a resumable session ID.</p>
+            </div>
+          </details>;
+        })() : null}
         {stage.summary ? <div className="reported-summary"><span className="field-label">Reported summary</span><p>{stage.summary}</p></div> : null}
         {stage.failureReason ? <p className="reason">{stage.failureReason}</p> : null}
         <div className="evidence-block"><h4><ShieldCheck size={14} />Recorded checks</h4>
@@ -569,15 +636,20 @@ function RunRow({ run, open, onToggle, agents, events }: {
             <div><strong>{gate.gate}</strong><p>{gate.reason || 'No reason reported.'}</p></div>
           </li>)}</ul>}
           <h4>Artifact paths</h4>
-          {stage.artifacts.length ? <ul className="artifact-list">{stage.artifacts.map((artifact, index) => <li key={`${artifact.path}-${index}`}><strong>{artifact.name}</strong><code tabIndex={0} aria-label={`${artifact.name} path`}>{artifact.path}</code></li>)}</ul>
+          {stage.artifacts.some((artifact) => !artifact.name.startsWith('prior_attempt:')) ? <ul className="artifact-list">{stage.artifacts.filter((artifact) => !artifact.name.startsWith('prior_attempt:')).map((artifact, index) => <li key={`${artifact.path}-${index}`}>
+            <div className="section-top"><strong>{artifact.name}</strong>
+              {['task_contract', 'agent_session', 'agent_result', 'published_output'].includes(artifact.name) ? <button className="btn small subtle" disabled={pending !== null}
+                onClick={() => { void perform(`Open ${artifact.name}`, async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: artifact.name as 'task_contract' | 'agent_session' | 'agent_result' | 'published_output' })); }}>
+                <ExternalLink size={12} />Open</button> : null}</div><code tabIndex={0} aria-label={`${artifact.name} path`}>{artifact.path}</code></li>)}</ul>
             : <p className="helper">No artifact paths reported. Packet and report paths appear here when supplied by the engine.</p>}
-          <p className="helper">Paths are selectable references, not verified file contents. Opening artifacts is not available through the current bridge.</p>
+          {stage.artifacts.some((artifact) => artifact.name.startsWith('prior_attempt:')) ? <p className="helper">Previous attempt details are preserved in the run report. Use Open report at the top of this run.</p> : null}
+          <p className="helper">Task contracts and agent session logs can be opened from this run. Artifact paths are references; a path alone does not verify its contents.</p>
         </div>
         {stage.status === 'escalated' ? <fieldset className="escalation-box" disabled={pending !== null}><legend>Resolve this handoff</legend>
           <label className="field-label" htmlFor={`reassign-${run.id}-${stage.spec.id}`}>Retry with a detected terminal</label>
           <div className="row-flex"><select id={`reassign-${run.id}-${stage.spec.id}`} className="select-input" value={reassign[stage.spec.id] ?? ''}
             onChange={(event) => setReassign({ ...reassign, [stage.spec.id]: event.target.value })}><option value="">Choose terminal…</option>
-            {agents.filter((agent) => agent.detected).map((agent) => <option key={agent.id} value={agent.id}>{agent.label}</option>)}</select>
+            {agents.filter((agent) => agent.detected && agent.roles.includes(stage.spec.role)).map((agent) => <option key={agent.id} value={agent.id}>{agent.label}</option>)}</select>
             <button className="btn small" disabled={!reassign[stage.spec.id]} onClick={() => escalate(stage.spec.id, 'assign')}><RefreshCw size={13} />Retry with agent</button></div>
           <label className="field-label" htmlFor={`note-${run.id}-${stage.spec.id}`}>Manual completion note</label>
           <input id={`note-${run.id}-${stage.spec.id}`} className="text-input" value={notes[stage.spec.id] ?? ''} placeholder="What did you change and check?"
@@ -602,35 +674,17 @@ function EventLog({ events, label }: { events: OrchEvent[]; label: string }): Re
   </div>;
 }
 
-function localExpiry(value: string | undefined): string {
-  if (!value) return '';
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return '';
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-}
-
-function SettingsPage({ settings, setSettings, logs, agents }: {
-  settings: AppSettings | null; setSettings: (settings: AppSettings) => void; logs: PipelineLog[]; agents: AgentStatus[];
+function SettingsPage({ settings, setSettings, logs }: {
+  settings: AppSettings | null; setSettings: (settings: AppSettings) => void; logs: PipelineLog[];
 }): ReactElement {
   const [draft, setDraft] = useState<AppSettings | null>(settings);
   const [saved, setSaved] = useState(false);
   const [pending, perform] = useOperation();
   useEffect(() => { setDraft(settings); }, [settings]);
-  const entitlementAgents = agents.filter((agent) => agent.detected && agent.id !== 'manual' && agent.family !== 'human');
-  function updateEntitlement(agentId: string, patch: Partial<AgentEntitlement>): void {
-    if (!draft) return;
-    const budget = draft.budget ?? budgetConfigSchema.parse({});
-    setSaved(false);
-    setDraft({ ...draft, budget: { ...budget, policy: 'free-only', maxUsd: 0, entitlements: {
-      ...budget.entitlements,
-      [agentId]: { ...(budget.entitlements[agentId] ?? { kind: 'unknown', userConfirmed: false }), ...patch }
-    } } });
-  }
   function save(): void {
     if (!draft) return;
     void perform('Save settings', async () => {
-      // Retain unrelated settings and confirmations; this build never enables a paid budget.
-      const next = { ...draft, budget: freeOnlyBudget(draft) };
+      const next = draft;
       await window.tawnyOrch.saveSettings(next);
       setSettings(next); setDraft(next); setSaved(true);
     });
@@ -639,36 +693,6 @@ function SettingsPage({ settings, setSettings, logs, agents }: {
     <PageHeading eyebrow="LOCAL CONTROL, CLEAR BOUNDARIES" title="Make it work for you.">Keep your own tools and accounts. Understand what stays here and what leaves this device.</PageHeading>
     {!draft ? <div className="card" role="status">Settings have not loaded. If loading failed, reopen the app before making changes; existing settings will not be overwritten.</div> : <>
       <form className="settings-form" onSubmit={(event) => { event.preventDefault(); save(); }}>
-      <section className="card" aria-labelledby="budget-settings">
-        <div className="section-top"><div><span className="eyebrow">FREE BUILD · FIXED POLICY</span><h2 id="budget-settings">Confirm your agent access.</h2></div>
-          <span className="chip blue">Free-only · $0 cap</span></div>
-        <p id="entitlement-help" className="card-sub">Selecting Free or Local records your explicit confirmation that the terminal’s currently configured model can run at no provider charge. You are responsible for checking your vendor entitlement, current model, sign-in and remaining allowance. Detection is not authentication or proof of free access.</p>
-        <p className="info-note">Every save fixes the policy to free-only and the dispatch budget to $0. No paid routing is enabled here. With no eligible automatic agent, the router can use an eligible manual slot or stop for resolution.</p>
-        <div className="entitlement-list">{entitlementAgents.map((agent) => {
-          const entitlement = draft.budget?.entitlements[agent.id];
-          const kind = entitlement?.userConfirmed && (entitlement.kind === 'free' || entitlement.kind === 'local') ? entitlement.kind : 'off';
-          return <fieldset className="entitlement-editor" key={agent.id} disabled={pending !== null} aria-describedby="entitlement-help">
-            <legend>{agent.label}</legend>
-            <p className="helper">{agent.authenticated === true ? 'Sign-in reported by the terminal' : agent.authenticated === false ? 'Terminal reports sign-in required' : 'Sign-in not verified'} · confirmation applies to your current CLI/model configuration.</p>
-            <label className="field-label" htmlFor={`entitlement-${agent.id}`}>I confirm this agent’s access</label>
-            <select id={`entitlement-${agent.id}`} className="select-input" value={kind} onChange={(event) => {
-              const nextKind = event.target.value === 'free' ? 'free' : event.target.value === 'local' ? 'local' : 'unknown';
-              updateEntitlement(agent.id, { kind: nextKind, userConfirmed: nextKind !== 'unknown', maxCostUsd: 0 });
-            }}><option value="off">Off — not confirmed for automatic dispatch</option><option value="free">Free — I confirm no-charge vendor access</option>
-              <option value="local">Local — I confirm no-charge local execution</option></select>
-            <div className="entitlement-options"><div><label className="field-label" htmlFor={`expiry-${agent.id}`}>Access expires · optional, local time</label>
-              <input id={`expiry-${agent.id}`} className="text-input" type="datetime-local" disabled={kind === 'off'} value={localExpiry(entitlement?.expiresAt)} onChange={(event) => {
-                const date = event.target.value ? new Date(event.target.value) : null;
-                updateEntitlement(agent.id, { expiresAt: date && Number.isFinite(date.getTime()) ? date.toISOString() : undefined });
-              }} /></div><div><label className="field-label" htmlFor={`requests-${agent.id}`}>Remaining requests · optional</label>
-              <input id={`requests-${agent.id}`} className="text-input" type="number" min={0} step={1} disabled={kind === 'off'} value={entitlement?.remainingRequests ?? ''}
-                placeholder="Not specified" onChange={(event) => updateEntitlement(agent.id, { remainingRequests: event.target.value === '' ? undefined : Number(event.target.value) })} /></div></div>
-            <p className="helper">Self-reported limits, not a live vendor check. Leave blank if unspecified; 0 requests or an expired date prevents eligibility. Reconfirm if your model or account changes.</p>
-          </fieldset>;
-        })}</div>
-        {!entitlementAgents.length ? <p className="empty-inline">No detected non-manual agents to confirm. Detect installed tools in Cockpit. Manual access does not need a vendor entitlement.</p> : null}
-        <p className="helper">Changes apply with Save settings below. Existing confirmations for tools not currently detected are retained; undetected tools cannot dispatch.</p>
-      </section>
       <section className="card" aria-labelledby="voice-settings"><h2 id="voice-settings">Voice & transcription</h2>
         <p className="card-sub">Optional for typed runs. Voice sends audio to Groq; an API key, network access and provider allowance are required. Capture auto-stops at 120 seconds, and audio over 25 MB is not uploaded.</p>
         <fieldset className="settings-fields" disabled={pending !== null}>
@@ -686,8 +710,8 @@ function SettingsPage({ settings, setSettings, logs, agents }: {
           <button className="btn primary" type="submit" disabled={pending !== null}><Check size={15} />{pending ? 'Saving…' : 'Save settings'}</button></div>
       </section>
       </form>
-      <section className="card privacy-panel" aria-labelledby="local-settings"><ShieldCheck size={24} /><div><h2 id="local-settings">Local-first. Not a promise of free compute.</h2>
-        <p>Project work runs through installed agent terminals. Their sign-in, models, network use, rate limits and billing remain with their providers. Check your account before dispatching; this screen does not verify free-tier eligibility.</p>
+      <section className="card privacy-panel" aria-labelledby="local-settings"><ShieldCheck size={24} /><div><h2 id="local-settings">Local-first. Provider settings stay with your CLI.</h2>
+        <p>Project work runs through installed agent terminals. Their sign-in, models, network use, rate limits and billing remain with their providers. Configure a local model in that agent's CLI and select the detected terminal in your pipeline.</p>
         <p>Typed goals do not need a transcription key. Local artifact paths and event records are evidence references—not a guarantee that checks passed.</p></div></section>
     </>}
     <section className="card" aria-labelledby="diagnostics-title"><div className="section-top"><div><span className="eyebrow">DIAGNOSTICS</span><h2 id="diagnostics-title">Recent activity</h2></div><span className="utility">Latest {Math.min(logs.length, 100)} entries</span></div>

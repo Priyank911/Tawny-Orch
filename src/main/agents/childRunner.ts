@@ -52,6 +52,8 @@ export interface ChildRunOptions {
   env?: NodeJS.ProcessEnv;
   stdinPayload?: string;
   cancelSignal?: AbortSignal;
+  onSpawn?: (pid: number | undefined) => void;
+  onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
 }
 
 export interface ChildRunResult {
@@ -81,6 +83,9 @@ export function runChild(command: string, args: string[], options: ChildRunOptio
     let inputFailed = false;
     let outputTruncated = false;
     const appendError = (message: string) => { stderr = `${stderr}\n${message}`.slice(-MAX_OUTPUT_CHARS); };
+    const notifyOutput = (stream: 'stdout' | 'stderr', text: string) => {
+      try { options.onOutput?.(stream, text); } catch { /* Observability hooks cannot fail process collection. */ }
+    };
     const finish = (exitCode: number | null) => {
       if (settled) return;
       settled = true;
@@ -165,11 +170,16 @@ export function runChild(command: string, args: string[], options: ChildRunOptio
       const text = outDecoder.write(chunk);
       outputTruncated ||= stdout.length + text.length > MAX_OUTPUT_CHARS;
       stdout = (stdout + text).slice(-MAX_OUTPUT_CHARS);
+      notifyOutput('stdout', text);
     });
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = errDecoder.write(chunk);
       outputTruncated ||= stderr.length + text.length > MAX_OUTPUT_CHARS;
       stderr = (stderr + text).slice(-MAX_OUTPUT_CHARS);
+      notifyOutput('stderr', text);
+    });
+    child.once('spawn', () => {
+      try { options.onSpawn?.(child.pid); } catch { /* Observability hooks cannot fail process collection. */ }
     });
     child.once('error', (error) => {
       appendError(`Could not launch ${command} in ${options.cwd}: ${error.message}. Check CLI installation, PATH, working directory and permissions.`);
@@ -250,6 +260,27 @@ export function parseCodexJson(stdout: string): { summary: string; isFailure: bo
   return { summary: narratives[narratives.length - 1], isFailure: failure };
 }
 
+/** Extract a provider-issued ID only from structured session/thread fields. */
+export function parseSessionId(stdout: string): string | undefined {
+  const keys = new Set(['thread_id', 'threadid', 'session_id', 'sessionid']);
+  for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
+    try {
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== 'object') continue;
+      const stack: unknown[] = [value];
+      while (stack.length) {
+        const current = stack.pop();
+        if (!current || typeof current !== 'object') continue;
+        for (const [key, child] of Object.entries(current)) {
+          if (keys.has(key.toLowerCase()) && typeof child === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(child)) return child;
+          if (child && typeof child === 'object') stack.push(child);
+        }
+      }
+    } catch { /* Not a JSON event. */ }
+  }
+  return undefined;
+}
+
 /** Parse the Antigravity CLI's documented NDJSON init/step_update/result stream. */
 export function parseAgyStreamJson(stdout: string): { summary: string; isFailure: boolean } | undefined {
   let final: { status?: string; response?: string; error?: string } | undefined;
@@ -273,6 +304,95 @@ export function parseAgyStreamJson(stdout: string): { summary: string; isFailure
   if (!final && !streamedResponse) return undefined;
   const summary = final?.response?.trim() || streamedResponse.trim() || final?.error?.trim() || '';
   return { summary, isFailure: final?.status !== 'SUCCESS' || !summary };
+}
+
+/** Gemini's --output-format json envelope (or streaming JSON events). */
+export function parseGeminiJson(stdout: string): { summary: string; isFailure: boolean } | undefined {
+  const trimmed = stdout.trim();
+  if (!trimmed) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object') {
+      const envelope = parsed as { response?: unknown; error?: unknown; status?: unknown };
+      if (typeof envelope.response === 'string') {
+        return { summary: envelope.response, isFailure: Boolean(envelope.error) || envelope.status === 'error' };
+      }
+      if (envelope.error) return { summary: typeof envelope.error === 'string' ? envelope.error : JSON.stringify(envelope.error), isFailure: true };
+    }
+  } catch { /* Try the stream-json event format below. */ }
+  let response = '';
+  let failure = '';
+  for (const line of trimmed.split(/\r?\n/)) {
+    try {
+      const parsed = JSON.parse(line) as { type?: string; response?: unknown; error?: unknown; message?: { content?: unknown } };
+      if (parsed.type === 'result' && typeof parsed.response === 'string') response = parsed.response;
+      else if (parsed.type === 'message' && typeof parsed.message?.content === 'string') response += parsed.message.content;
+      else if (parsed.type === 'error') failure = typeof parsed.error === 'string' ? parsed.error : JSON.stringify(parsed.error ?? parsed);
+    } catch { /* Ignore non-JSON diagnostics. */ }
+  }
+  if (response || failure) return { summary: response || failure, isFailure: Boolean(failure) };
+  return parseTailNarrative(stdout);
+}
+
+/** OpenCode's --format json stream uses text parts and explicit error events. */
+export function parseOpenCodeJson(stdout: string): { summary: string; isFailure: boolean } | undefined {
+  const messages = new Map<string, string>();
+  let latestMessage = '';
+  let finishReason = '';
+  let failure = '';
+  for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
+    try {
+      const event = JSON.parse(line) as {
+        type?: string;
+        messageID?: string;
+        part?: { type?: string; text?: string; messageID?: string };
+        error?: { data?: { message?: string }; message?: string } | string;
+      };
+      if (event.type === 'text' && event.part?.type === 'text' && typeof event.part.text === 'string') {
+        // A message may arrive as several text events. Preserve all of its
+        // parts, but select the latest assistant message rather than exposing
+        // an earlier commentary message as the final handoff.
+        const messageId = event.messageID ?? event.part.messageID ?? 'latest';
+        messages.set(messageId, (messages.get(messageId) ?? '') + event.part.text);
+        latestMessage = messageId;
+      }
+      if (event.type === 'step_finish' && event.part?.type === 'step-finish') {
+        finishReason = typeof (event.part as { reason?: unknown }).reason === 'string'
+          ? (event.part as { reason: string }).reason : '';
+      }
+      if (event.type === 'error') {
+        failure = typeof event.error === 'string' ? event.error : event.error?.data?.message ?? event.error?.message ?? 'OpenCode reported an error.';
+      }
+    } catch { /* Ignore non-JSON diagnostics. */ }
+  }
+  const response = messages.get(latestMessage) ?? '';
+  if (failure) return { summary: response || failure, isFailure: true };
+  if (finishReason && finishReason !== 'stop') {
+    const detail = response ? ` Last output: ${response.slice(-500)}` : '';
+    return { summary: `OpenCode ended before a final response (step finish reason: ${finishReason}).${detail}`, isFailure: true };
+  }
+  return response ? { summary: response, isFailure: false } : parseTailNarrative(stdout);
+}
+
+/** Qwen's JSON mode returns an array whose final item is the result envelope. */
+export function parseQwenJson(stdout: string): { summary: string; isFailure: boolean } | undefined {
+  try {
+    const parsed: unknown = JSON.parse(stdout.trim());
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    const result = [...rows].reverse().find((row): row is { type?: string; result?: unknown; is_error?: boolean; subtype?: string; message?: { content?: unknown[] } } =>
+      Boolean(row) && typeof row === 'object' && (row as { type?: unknown }).type === 'result');
+    if (result) {
+      const text = typeof result.result === 'string' ? result.result : '';
+      return { summary: text, isFailure: result.is_error === true || result.subtype !== 'success' || !text };
+    }
+    const messages = rows.filter((row): row is { type?: string; message?: { content?: unknown[] } } =>
+      Boolean(row) && typeof row === 'object' && (row as { type?: unknown }).type === 'assistant');
+    const text = messages.flatMap((row) => row.message?.content ?? [])
+      .map((part) => part && typeof part === 'object' && 'text' in part && typeof part.text === 'string' ? part.text : '')
+      .join('');
+    if (text) return { summary: text, isFailure: false };
+  } catch { /* Qwen may be configured for text or stream-json output. */ }
+  return parseTailNarrative(stdout);
 }
 
 export function parseTailNarrative(stdout: string, maxChars = 2000): { summary: string; isFailure: boolean } {

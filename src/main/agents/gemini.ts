@@ -1,15 +1,16 @@
 ﻿import type { AgentAdapter, AdapterContext, AdapterHandle } from './base';
 import type { ArtifactBundle } from '../../shared/contracts';
 import { abort, isReadOnlyContract, runHeadless, type HeadlessPlan } from './headless';
-import { parseTailNarrative } from './childRunner';
+import { parseGeminiJson, parseSessionId } from './childRunner';
 
 const plan: HeadlessPlan = {
   commandLine: 'gemini',
   // geminicli.com/docs/cli/cli-reference: -p appends to piped stdin and
   // forces non-interactive mode. Plan mode can still write internal plan files.
   args: (contract) => ['--approval-mode', isReadOnlyContract(contract) ? 'plan' : 'auto_edit',
-    '-p', 'Follow the task contract supplied on stdin. Do not escalate permissions.'],
-  parse: parseTailNarrative
+    '--output-format', 'json', '-p', 'Follow the task contract supplied on stdin. Do not escalate permissions.'],
+  parse: parseGeminiJson,
+  sessionId: parseSessionId
 };
 
 export const geminiAdapter: AgentAdapter = {

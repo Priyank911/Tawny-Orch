@@ -9,6 +9,16 @@ export interface AdapterContext {
   readonly cwd: string;
   readonly workdir: string;
   readonly packetPath?: string;
+  readonly sessionLogPath?: string;
+  readonly onSessionEvent?: (event: {
+    type: 'started' | 'output' | 'finished';
+    pid?: number;
+    stream?: 'stdout' | 'stderr';
+    text?: string;
+    exitCode?: number | null;
+    timedOut?: boolean;
+    cancelled?: boolean;
+  }) => void;
 }
 
 export interface AdapterHandle extends RunKey {

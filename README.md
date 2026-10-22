@@ -11,7 +11,7 @@ Tawny Orch is built with Electron, React, and TypeScript. The orchestration engi
 | Platform | Windows desktop app; `pnpm dev` opens Electron |
 | Workflow | Staged project pipeline with agent routing, handoff artifacts, gates, retries, and escalation |
 | Agent access | Selected local CLIs plus a human operated manual packet slot |
-| Default budget | Free-only routing with a `$0` paid dispatch budget |
+| Agent access | No Tawny free-tier confirmation gate; selected CLIs use their saved provider/model configuration |
 | Storage | Local project and app data; JSON and JSONL files in the current implementation |
 | Mobile | Not implemented; no phone pairing or remote connection endpoint |
 
@@ -33,7 +33,9 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` starts the Vite renderer and Electron shell. It should open a **desktop Electron window**; it is not a web server to open on a phone. In the app, attach a project folder in Cockpit, inspect and save its pipeline, check agent access in Settings, enter a goal, and review the run before dispatch.
+`pnpm dev` starts the Vite renderer and Electron shell. It should open a **desktop Electron window**; it is not a web server to open on a phone. In the app, attach a project folder in Cockpit, inspect and save its pipeline, choose detected agents by stage, enter a goal, and review the run before dispatch. Configure sign-in, provider, and local models in each agent CLI; Tawny does not override those settings or estimate provider charges.
+
+New runs use the selected project folder as the execution workspace, so requested files and code changes appear there as the agents work. Tawny captures a pre-stage snapshot, checks allowed paths and secrets, and records stage evidence. Pipeline configuration and shared memory are stored under Tawny's app-data directory; manual-agent packets and run evidence are stored with the run. New runs therefore do not create a `.tawny-orch/` directory in the selected project. Existing legacy `.tawny-orch/` configuration and memory are read and migrated forward on the next save. Older runs that already have a recorded worktree continue to use that workspace. Use **Open selected project folder** on a new run to navigate to the exact folder agents use.
 
 Typed goals work without a transcription provider. Optional voice capture requires a Groq API key, network access, microphone permission, and provider allowance. Voice audio is sent to Groq for transcription; it is not an offline path.
 
@@ -106,7 +108,15 @@ sequenceDiagram
   UI-->>Person: Show outcome and evidence
 ```
 
-Agents do not send arbitrary shell commands directly to each other. The engine records a stage result and builds a new contract for the next independently routed invocation, including relevant prior outputs and artifacts. Manual stages produce a Markdown packet for a person to use in an IDE or other tool; the person returns a `DONE.json` sentinel and evidence. The engine decides whether a stage can advance after applying its gates.
+Agents do not send arbitrary shell commands directly to each other. The engine validates the structured final response, persists the result outside the project, records a verified packet, and embeds the packet contents into the next stage's contract. This lets the next agent receive research/plan findings and gate evidence directly, without needing access to Tawny's private app-data paths. Manual stages produce a Markdown packet for a person to use in an IDE or other tool; the person returns a `DONE.json` sentinel and evidence. The engine decides whether a stage can advance after applying its gates.
+
+### Where requested files go
+
+For new Git projects, execute and test stages work in the selected folder by default. When a goal explicitly asks for a deliverable (for example, “create `plan.md`” or “make a plan + architecture”), Tawny records those project-relative paths in the contract and verifies each requested file changed during the execute stage. Existing requested files may be updated in place; they are not copied or replaced by a second file operation. The run report lists requested, present, and blocked outputs. Current direct mode makes all code changes in the selected checkout, so review the run report and Git diff before keeping or reverting them.
+
+The run view streams headless CLI output while an agent is running. When Codex, OpenCode, Gemini CLI, or Claude Code returns a structured session ID, **Resume agent session** opens that saved conversation in a new terminal after the attempt exits. This is a provider resume, not an attachment to the already-running process. Providers that do not expose a session ID remain available through the captured session log.
+
+Older runs created by a build that did not record `requestedOutputs` cannot publish deliverables automatically; rerun them after updating/restarting Tawny Orch with the current build.
 
 ## Agent detection and support
 
@@ -121,16 +131,18 @@ Detection is deliberately narrower than “find every agentic terminal.” The c
 | Cursor Agent | `cursor-agent` | Headless adapter |
 | OpenCode | `opencode` | Headless adapter; Windows npm `.cmd` shims are supported |
 | Muse Code | `muse` | Manual packet slot; public headless CLI support is not assumed |
-| Qwen Code | `qwen` | Catalog/version probe; no automatic adapter in this build |
+| Qwen Code | `qwen` | Headless adapter; structured JSON results are converted into verified handoffs |
 | Manual slot | — | Always available for person-completed stages |
 
-On Windows, command probing and execution account for `PATHEXT` and `.cmd`/`.bat` shims. This is needed for npm-installed tools such as OpenCode. Agent-specific command arguments and output parsing live in their adapters. Detection is read-only: it does not install agents, log in, or inspect vendor quota APIs.
+On Windows, command probing and execution account for `PATHEXT` and `.cmd`/`.bat` shims. On macOS/Linux, detection uses `which`. Agent-specific command arguments, permission modes, output parsing, and result handoffs live in their adapters. Detection is read-only: it does not install agents, log in, or inspect vendor quota APIs.
+
+Stage compatibility comes from the adapter's supported roles. Codex, OpenCode, and Qwen Code support all six pipeline roles. Research, Plan, Review, and Deliver use read-only modes; Execute and Test use workspace-capable modes. Gemini supports Research, Execute, and Test; Claude Code and Antigravity support Research, Plan, Execute, and Review; Cursor Agent is execution-only. Muse Code remains a manual packet because no supported public headless CLI is assumed. Detection checks installation and version only; a CLI's own startup result determines whether its current sign-in/model configuration can run.
 
 ### If OpenCode says “Probe failed”
 
-The current detection path must both locate `opencode` with `where.exe` and get a version string from `opencode --version`. The Windows shim resolver used by task dispatch is also used for version probes. A transient failed probe can still be shown until the next forced detection or the short detection cache expires.
+The current detection path must locate `opencode` and get a version string from `opencode --version`. Windows uses `where.exe`; macOS/Linux use `which`. The Windows shim resolver used by task dispatch is also used for version probes. A transient failed probe can still be shown until the next forced detection or the short detection cache expires.
 
-1. Open a PowerShell window and run `where.exe opencode` and `opencode --version`.
+1. Open a terminal and run `where.exe opencode` (Windows) or `which opencode` (macOS/Linux), then `opencode --version`.
 2. If the version command works there, fully close and reopen Tawny Orch so Electron inherits the latest `PATH`.
 3. In Tawny Orch, choose **Detect again**. If it still fails, record the command output and check the app's launch terminal for the underlying error.
 4. Confirm the installed CLI is the one you intend to use; multiple `opencode` entries on `PATH` can select a different shim than expected.
@@ -139,10 +151,13 @@ This repository's current machine check returned OpenCode `1.18.35`, and the aut
 
 ## How routing and safety work
 
-- **Free-only default:** the router respects the configured `$0` paid dispatch budget and only treats free/local eligibility as available when the user confirms it in Settings. The app cannot guarantee third-party pricing.
+- **Provider configuration:** Tawny dispatches selected, detected tools without a free/local confirmation in Settings. Each CLI uses its existing configured account, provider, and model; provider usage and billing remain outside Tawny's visibility and control.
 - **Role and pin:** candidates are evaluated against the stage role and the user's saved/pinned choices.
 - **Independent verification:** test/review routing can enforce a different agent family from the code author, where the workflow requires it.
 - **Structured results:** adapters parse their supported output formats; agent self-reports alone are not treated as proof that work passed.
+- **Live sessions:** headless agent stdout/stderr appears in the run monitor with process state, PID when available, working directory, and a bounded output tail. The Markdown task contract and saved session log can be opened from the stage. This is captured process output, not an interactive terminal attachment.
+- **Optional stages:** remove stages from the saved pipeline or skip a queued, active, or escalated stage in Runs & evidence. Skipping an active stage requests process-tree cancellation and records the skipped work; later stages may continue with that gap visible.
+- **Cancellation reports:** cancelling a run stops the active collector, records why later stages did not run, and writes or updates `final-summary.md` before returning when the agent drains within the bounded stop window.
 - **Gates:** the engine checks result shape and applicable scope, secret, Git/workspace, and configured acceptance checks.
 - **Recovery:** failures can retry within configured limits or pause for human resolution. Interrupted work and evidence are retained for review.
 - **Local processes:** headless CLI adapters spawn local child processes. The engine captures output and supports cancellation; it does not turn an IDE-only agent into a remotely controllable service.
@@ -166,7 +181,7 @@ The product architecture describes a broader phased target. This table is an aud
 | Discovery and drivers | Selected PATH/version probes, selected headless adapters, manual packet slots | ACP registry, general installer, WSL/IDE discovery, general PTY/ACP drivers, comprehensive auth/usage probes |
 | Pipelines and verification | Staged engine, routing, retries/escalation, structured results, reports/events, configured acceptance checks | Broad contradiction detection and the complete target workflow/isolation guarantees |
 | Memory | Local project JSONL ledger | SQLite/FTS5, embeddings, trust/decay scoring |
-| Quota and failover | User-confirmed free/local eligibility, budget controls, bounded failover behavior | Signed live quota catalog and complete vendor usage telemetry |
+| Quota and failover | Capability/health routing and bounded failover; no cost confirmation gate | Signed live quota catalog and complete vendor usage telemetry; cost-aware routing is not enabled |
 | Mobile/cloud | None | PWA, pairing, encrypted relay, phone approvals, D1/R2, accounts and billing |
 
 ### Roadmap checkpoint
@@ -175,12 +190,12 @@ The product architecture describes a broader phased target. This table is an aud
 | --- | --- |
 | Week 1 — utility process, protocol, SQLite, close survival | **Partial:** utility process and protocol coverage exist; storage remains JSON, engine still depends on Electron |
 | Week 2 — voice to confirmed RunSpec | **Partial:** typed/voice runs, project picker and review exist; no general RunSpec compiler or active-window resolver |
-| Week 3 — headless drivers and routing | **Implemented for the current supported catalog:** selected adapters and probes exist; auth/free access remain user-confirmed; Muse Code is manual |
+| Week 3 — headless drivers and routing | **Implemented for the current supported catalog:** selected adapters and probes exist; CLI account/model configuration remains with each tool; Muse Code is manual |
 | Week 4 — planning, execution and isolated handoffs | **Partial:** engine, contracts, packets, retries and Git worktree support exist; full isolation guarantees do not |
 | Week 5 — gates and independent verification | **Partial:** structured result, safety/scope checks, configured acceptance and family constraints exist; broad contradiction system does not |
 | Week 6 — user demo gate | **Not evidenced:** no demo/interview results are checked into this repository |
 | Week 7 — install flow and WSL | **Not implemented** |
-| Week 8 — signed quota data and full failover | **Partial:** local eligibility and bounded failover exist; no signed live quota feed |
+| Week 8 — signed quota data and full failover | **Partial:** bounded failover exists; no signed live quota feed or cost-aware dispatch |
 | Week 9 — advanced shared memory | **Partial:** local JSONL memory exists; SQLite search, embeddings and trust scoring do not |
 | Week 10 — relay, PWA and phone approvals | **Not implemented** |
 | Week 11 — accounts and billing | **Not implemented** |
@@ -188,7 +203,7 @@ The product architecture describes a broader phased target. This table is an aud
 
 ## Data locations and repository map
 
-- Project runtime data lives in `.tawny-orch/` under the selected project. It includes project configuration, packets, and project memory; it is ignored by Git.
+- Project pipeline settings and memory are stored under Tawny's app-data directory, keyed by the selected project path. Run packets and evidence live under that run's app-data folder. New runs do not add Tawny runtime files to the selected project.
 - Electron user data holds app preferences, run state, logs, and credentials according to the local implementation. Credentials use Electron `safeStorage` where supported.
 - Run reports and transcripts can contain project details. Review them before sharing.
 
@@ -198,6 +213,7 @@ The product architecture describes a broader phased target. This table is an aud
 | `src/main/` | Electron lifecycle, IPC, detection, adapters, providers, engine, and utility process |
 | `src/renderer/` | React desktop UI and styles |
 | `test/` | Unit, integration, routing, detection, and local Git workflow tests |
+| `docs/run-monitor-reliability-plan.md` | Behavior and verification plan for live run monitoring, skipping, and cancellation |
 | `PLAN.md` | Earlier product plan and implementation notes; roadmap items are targets, not proof of completion |
 
 ## Troubleshooting

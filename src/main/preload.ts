@@ -36,6 +36,9 @@ contextBridge.exposeInMainWorld('tawnyOrch', {
   getRuns: (): Promise<RunSnapshot[]> => ipcRenderer.invoke('runs:list'),
   getRun: (runId: string): Promise<RunSnapshot | null> => ipcRenderer.invoke('run:get', runId),
   cancelRun: (runId: string): Promise<void> => ipcRenderer.invoke('run:cancel', runId),
+  openRunArtifact: (input: { runId: string; stageId?: string; name: 'task_contract' | 'agent_session' | 'agent_result' | 'final_report' | 'worktree' | 'selected_workspace' | 'published_output' }): Promise<void> =>
+    ipcRenderer.invoke('run:artifact:open', input),
+  openAgentSession: (input: { runId: string; stageId: string }): Promise<void> => ipcRenderer.invoke('run:agent-session:open', input),
   escalateStage: (input: { runId: string; stageId: string; reassignAgentId?: string | null; manualComplete?: boolean; summary?: string; skip?: boolean }): Promise<void> =>
     ipcRenderer.invoke('run:escalate', { ...input, agentId: input.reassignAgentId }),
 

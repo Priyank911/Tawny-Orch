@@ -1,5 +1,4 @@
-import type { BudgetConfig, RunSnapshot } from '../../shared/contracts';
-import { budgetConfigSchema } from '../../shared/contracts';
+import type { RunSnapshot } from '../../shared/contracts';
 import type { EngineDeps, OrchestratorEngine } from '../orchestrator/engine';
 import {
   DaemonRpcError, PROTOCOL_VERSION, decode, encode, errorMessage, isMethod, paramsSchemas, requestSchema,
@@ -10,8 +9,7 @@ export type DaemonEngine = Pick<OrchestratorEngine,
   'createRun' | 'listRuns' | 'loadRunById' | 'startRun' | 'cancelRun' | 'escalateStage'> & {
     stopAgents?(): Promise<void>;
   };
-// The zero-argument callback also works when EngineDeps.budgetFor accepts run/project context.
-export type DaemonEngineDeps = EngineDeps & { budgetFor: () => BudgetConfig };
+export type DaemonEngineDeps = EngineDeps;
 export interface ServerOptions {
   send(message: string): void;
   createEngine(deps: DaemonEngineDeps): DaemonEngine;
@@ -21,7 +19,6 @@ export interface ServerOptions {
 /** One engine per process. No network listener, renderer dependency, or credential store access. */
 export function createDaemonServer(options: ServerOptions) {
   let engine: DaemonEngine | undefined;
-  let budget = budgetConfigSchema.parse({});
   let configuring = false;
   let ready = false;
   let closing = false;
@@ -83,8 +80,7 @@ export function createDaemonServer(options: ServerOptions) {
       if (configuring || engine) throw new DaemonRpcError(-32002, 'Daemon is already configured');
       configuring = true;
       const config = params as Params<'configure'>;
-      budget = config.budget ?? budget;
-      engine = options.createEngine({ userDataDir: config.userDataDir, onRunUpdate: runUpdate, budgetFor: () => budget });
+      engine = options.createEngine({ userDataDir: config.userDataDir, onRunUpdate: runUpdate });
       const runs = await engine.listRuns();
       const recoverable = runs.filter((run) => run.status === 'pending' || run.status === 'running');
       // Engine.startRun preserves interrupted attempts as escalated; it never repeats them.
@@ -101,9 +97,8 @@ export function createDaemonServer(options: ServerOptions) {
       return { protocolVersion: PROTOCOL_VERSION, recoveredRunIds: recoverable.map((run) => run.id) };
     }
     if (!engine || !ready) throw new DaemonRpcError(-32003, 'Daemon is not configured');
-    if ('budget' in params && params.budget) budget = params.budget;
     switch (method) {
-      // The parsed budget replaces the callback snapshot above; running attempts are not touched.
+      // Kept as a protocol compatibility no-op for clients from earlier builds.
       case 'updateBudget': return null;
       case 'createRun': return engine.createRun((params as Params<'createRun'>).input);
       case 'listRuns': return engine.listRuns();

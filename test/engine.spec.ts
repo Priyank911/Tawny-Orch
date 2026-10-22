@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { OrchestratorEngine } from '../src/main/orchestrator/engine';
 import type { StageSpec } from '../src/shared/contracts';
+import { memoryFilePath } from '../src/main/orchestrator/memory';
 
 // Engine integration test with real manual (packet) adapters: no CLIs needed.
 // The manual adapter writes a task packet and waits for DONE.json; the test
@@ -34,10 +35,10 @@ afterEach(() => {
   rmSync(workDir, { recursive: true, force: true });
 });
 
-const inboxFile = (runId: string): string =>
-  join(projectDir, '.tawny-orch', 'inbox', `${runId}-plan.md`);
-const doneFile = (runId: string): string =>
-  join(projectDir, '.tawny-orch', 'inbox', `${runId}-plan`, 'DONE.json');
+const inboxFile = (runId: string, stageId = 'plan'): string =>
+  join(workDir, 'orchestrator', 'runs', runId, 'packets', `${runId}-${stageId}.md`);
+const doneFile = (runId: string, stageId = 'plan'): string =>
+  join(workDir, 'orchestrator', 'runs', runId, 'packets', `${runId}-${stageId}`, 'DONE.json');
 
 describe('orchestrator engine (manual adapters)', () => {
   it('creates, escalates, and completes a run end to end', async () => {
@@ -78,7 +79,7 @@ describe('orchestrator engine (manual adapters)', () => {
     await engine.escalateStage({ runId: run.id, stageId: 'plan', manualComplete: true, manualSummary: 'Plan summary with decisions.' });
     await waitFor(async () => ((await engine.loadRunById(run.id))?.status ?? '') === 'done', 20_000, 'run completes');
 
-    const memoryPath = join(projectDir, '.tawny-orch', 'memory.jsonl');
+    const memoryPath = memoryFilePath(projectDir, workDir);
     await waitFor(() => existsSync(memoryPath), 10_000, 'memory appears');
     expect(readFileSync(memoryPath, 'utf8')).toContain('Plan summary with decisions');
   }, 45_000);
@@ -95,9 +96,32 @@ describe('orchestrator engine (manual adapters)', () => {
     await waitFor(() => existsSync(inboxFile(run.id)), 10_000, 'packet wrote');
     await engine.cancelRun(run.id);
     const final = await engine.loadRunById(run.id);
-    // Conservative recovery: the packet was dispatched, so the stage is preserved/escalated.
-    // Only queued or pending runs can cancel outright without evidence.
-    expect(final?.status).toMatch(/^(cancelled|escalated)$/);
+    expect(final?.status).toBe('cancelled');
+    expect(final?.stages.map((stage) => stage.status)).toEqual(['cancelled', 'cancelled']);
+    expect(final?.stages[0].endedAt).toBeTruthy();
+    const report = readFileSync(join(workDir, 'orchestrator', 'runs', run.id, 'final-summary.md'), 'utf8');
+    expect(report).toContain('Status: cancelled');
+    expect(report).toContain('Not started because the run was cancelled.');
+  }, 45_000);
+
+  it('stops and skips the active stage, then continues with the next stage', async () => {
+    const run = await engine.createRun({
+      goal: 'Skip research and continue to planning',
+      projectPath: projectDir,
+      stages: [SPEC('manual', 'research'), SPEC('manual', 'plan')],
+      templateId: 'custom'
+    });
+    void engine.startRun(run.id).catch(() => undefined);
+    await waitFor(() => existsSync(inboxFile(run.id, 'research')), 10_000, 'research packet wrote');
+
+    await engine.escalateStage({ runId: run.id, stageId: 'research', skipStage: true });
+    await waitFor(() => existsSync(inboxFile(run.id, 'plan')), 10_000, 'next stage packet wrote');
+    const during = await engine.loadRunById(run.id);
+    expect(during?.stages[0].status).toBe('skipped');
+    expect(during?.stages[1].status).toBe('running');
+
+    await engine.cancelRun(run.id);
+    await waitFor(async () => (await engine.loadRunById(run.id))?.status === 'cancelled', 10_000, 'run cancelled');
   }, 45_000);
 });
 

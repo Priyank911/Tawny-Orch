@@ -170,23 +170,31 @@ describe('offline mid-task failover with real git', () => {
     expect(state.stages[0].failureReason).toContain('Explicit agent pin retained');
   });
 
-  it.each(['paid', 'zero-headroom', 'entitlement-exhausted', 'unsupported', 'unauthenticated', 'expired'] as const)('never switches to a %s candidate or the manual slot', async (kind) => {
-    if (kind === 'paid') {
-      budget.policy = 'quality-first'; budget.maxUsd = 100;
-      budget.entitlements['free-b'] = { kind: 'paid', userConfirmed: true, maxCostUsd: 0.1 };
-    }
+  it.each(['zero-headroom', 'unsupported', 'unauthenticated'] as const)('never switches to a %s candidate or the manual slot', async (kind) => {
     if (kind === 'zero-headroom') statuses[1].remainingRequests = 0;
-    if (kind === 'entitlement-exhausted') budget.entitlements['free-b'].remainingRequests = 0;
     if (kind === 'unsupported') statuses[1].roles = ['plan'];
     if (kind === 'unauthenticated') statuses[1].authenticated = false;
-    if (kind === 'expired') budget.entitlements['free-b'].expiresAt = '2020-01-01T00:00:00.000Z';
     statuses.push(status('manual', 'human', 1));
     act = () => limited();
     const state = await finish(await create());
     expect(calls.map((ctx) => ctx.contract.agentId)).toEqual(['free-a']);
     expect(state.status).toBe('escalated');
     expect((await continuation(state)).selected_replacement).toBeNull();
-    expect(state.stages[0].failureReason).toContain('No different eligible free/local external agent');
+    expect(state.stages[0].failureReason).toContain('No different compatible external agent');
+  });
+
+  it.each(['paid', 'entitlement-exhausted', 'expired'] as const)('does not use legacy %s settings to block agent failover', async (kind) => {
+    if (kind === 'paid') {
+      budget.policy = 'quality-first'; budget.maxUsd = 100;
+      budget.entitlements['free-b'] = { kind: 'paid', userConfirmed: true, maxCostUsd: 0.1 };
+    }
+    if (kind === 'entitlement-exhausted') budget.entitlements['free-b'].remainingRequests = 0;
+    if (kind === 'expired') budget.entitlements['free-b'].expiresAt = '2020-01-01T00:00:00.000Z';
+    act = (ctx) => ctx.contract.agentId === 'free-a' ? limited() : success();
+    const state = await finish(await create());
+    expect(calls.map((ctx) => ctx.contract.agentId)).toEqual(['free-a', 'free-b']);
+    expect(state.status).toBe('done');
+    expect(state.stages[0].agentId).toBe('free-b');
   });
 
   it('excludes exhausted IDs from subsequent automatic stages, not just the interrupted attempt', async () => {
@@ -295,16 +303,15 @@ describe('offline mid-task failover with real git', () => {
     expect((await engine.loadRunById(run.id))?.status).toBe('escalated');
   });
 
-  it('rechecks free eligibility immediately before replacement dispatch', async () => {
+  it('rechecks live agent availability immediately before replacement dispatch', async () => {
     act = () => limited();
     onUpdate = (run) => {
       if (run.stages[0].status === 'retrying') {
-        budget.policy = 'quality-first'; budget.maxUsd = 100;
-        budget.entitlements['free-b'] = { kind: 'paid', userConfirmed: true, maxCostUsd: 0.1 };
+        statuses[1].authenticated = false;
       }
     };
     const run = await create();
-    await expect(engine.startRun(run.id)).rejects.toThrow('no longer eligible');
+    await expect(engine.startRun(run.id)).rejects.toThrow('no longer available or compatible');
     expect(calls.map((ctx) => ctx.contract.agentId)).toEqual(['free-a']);
     expect((await engine.loadRunById(run.id))?.status).toBe('escalated');
   });

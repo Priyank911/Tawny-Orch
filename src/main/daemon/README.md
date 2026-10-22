@@ -16,10 +16,6 @@ callback configuration is equivalent to:
 ```ts
 const engine = createDaemonClient({
   userDataDir: app.getPath('userData'),
-  budgetFor: () => ({
-    ...settings.budget, policy: 'free-only', maxUsd: 0, spentUsd: 0,
-    entitlements: settings.budget?.entitlements ?? {}
-  }),
   onRunUpdate: updateSnapshotForRun,
   onEvent: (event) => mainWindow?.webContents.send('orch:event', event),
   onLog: (entry) => mainWindow?.webContents.send('pipeline:log', entry),
@@ -41,8 +37,8 @@ Public signature:
 
 - `createDaemonClient(options?: DaemonClientOptions): DaemonClient`
 - `start(): Promise<void>` / `stop(): Promise<void>` (both idempotent while in flight)
-- `updateBudget(): Promise<void>` — rereads `budgetFor` and updates the daemon's
-  routing policy without cancelling or modifying an in-flight attempt.
+- `updateBudget(): Promise<void>` — legacy protocol compatibility only. Tawny
+  no longer uses free-tier confirmations or budget settings to gate dispatch.
 - `createRun(input): Promise<RunSnapshot>`
 - `listRuns(): Promise<RunSnapshot[]>`
 - `loadRunById(runId): Promise<RunSnapshot | null>`
@@ -55,22 +51,15 @@ Public signature:
   `onError(listener)` — each returns an unsubscribe function. The first three
   also have corresponding optional constructor callbacks.
 
-Run/escalation input types match the engine. No credentials are transmitted;
-`budgetFor` returns only `BudgetConfig`, not the settings object. The callback
-is reread at recovery startup, every create/start/escalation request, and every
-`updateBudget()` call. After saving settings and replacing the shell's settings
-snapshot, the parent should `await engine.updateBudget()` so later stages of an
-already-running pipeline use the new policy, including revoked entitlements.
-The acknowledgement means the new policy is installed for subsequent routing
-checks; attempts that already passed routing continue unchanged. Missing budget
-resets to the shared free-only budget. Budget settings are process-wide (the
-same app settings policy), not per-project mutable overrides.
+Run/escalation input types match the engine. No credentials or provider account
+settings are transmitted to the utility process. Old clients may still send the
+budget field; the daemon accepts it for protocol compatibility and does not
+install it on the engine.
 
-**Engine integration is installed:** the daemon passes
-`budgetFor: () => BudgetConfig` into the optional `EngineDeps.budgetFor` callback.
-The engine reads that callback in `routeStage` and applies policy checks to both
-automatic and pinned selections. The shell currently forces free-only policy,
-zero paid budget, and the settings' confirmed entitlements.
+**Engine integration is installed:** the daemon creates the orchestration engine
+with the local data path and update callback. Routing checks detection health,
+stage capability, explicit stage pins, and independent-verification constraints.
+The current build does not infer cost, quota, or a provider plan from a CLI name.
 
 Keep main's settings/credentials, detection UI, recent logs, IPC, preload, and
 renderer in the shell. The child's existing `emitEvent` writes the event ledger;

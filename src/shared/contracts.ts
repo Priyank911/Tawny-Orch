@@ -165,6 +165,9 @@ export const runSnapshotSchema = z.object({
   projectName: z.string().default(''),
   templateId: z.string().default(''),
   branchPrefix: z.string().default('tawny-orch'),
+  requestedOutputs: z.array(z.string()).default([]),
+  publishedOutputs: z.array(z.string()).default([]),
+  publicationIssues: z.array(z.string()).default([]),
   status: runStatusSchema.default('pending'),
   createdAt: z.string(),
   updatedAt: z.string().optional(),
@@ -206,12 +209,16 @@ export const taskContractSchema = z.object({
   projectPath: z.string(),
   projectName: z.string().default(''),
   worktreePath: z.string().default(''),
+  requestedOutputs: z.array(z.string()).default([]),
   baseBranch: z.string().default('main'),
   planSummary: z.string().default(''),
   researchSummary: z.string().default(''),
   diffSoFar: z.array(z.string()).default([]),
   testReport: z.string().default(''),
   reviewFindings: z.string().default(''),
+  // Verified prior-stage packets are embedded into the next contract so an
+  // agent never needs filesystem access to Tawny's private app-data directory.
+  verifiedHandoffs: z.array(z.string()).default([]),
   memory: z.array(memoryEntrySchema).default([]),
   constraints: z.object({
     allowedFiles: z.array(z.string()).default([]),
@@ -239,7 +246,8 @@ export const artifactBundleSchema = z.object({
   result: agentResultsSchema.nullable().default(null),
   stderrTail: z.array(z.string()).default([]),
   exitCode: z.number().int().nullable().default(null),
-  timedOut: z.boolean().default(false)
+  timedOut: z.boolean().default(false),
+  sessionId: z.string().optional()
 });
 export type ArtifactBundle = z.infer<typeof artifactBundleSchema>;
 

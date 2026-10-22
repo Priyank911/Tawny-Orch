@@ -1,14 +1,14 @@
 ﻿import type { AgentAdapter, AdapterContext, AdapterHandle } from './base';
 import type { ArtifactBundle } from '../../shared/contracts';
 import { abort, isReadOnlyContract, runHeadless, type HeadlessPlan } from './headless';
-import { parseTailNarrative } from './childRunner';
+import { parseOpenCodeJson, parseSessionId } from './childRunner';
 
 const plan: HeadlessPlan = {
   commandLine: 'opencode',
   // opencode.ai/docs/{cli,agents,permissions}: Plan alone does not deny shell
   // execution. Apply the same deny-by-default policy at global and agent scope.
   args: (contract) => ['run', '--agent', isReadOnlyContract(contract) ? 'plan' : 'build',
-    'CONTRACT_PROMPT', '--file', 'CONTRACT_FILE'],
+    '--format', 'json', 'CONTRACT_PROMPT', '--file', 'CONTRACT_FILE'],
   env: (contract) => {
     // Explicit denials also override common per-tool allows inherited from
     // user/project config; a wildcard alone can lose to those specific rules.
@@ -20,7 +20,8 @@ const plan: HeadlessPlan = {
       OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission, agent: { plan: { permission }, build: { permission } } })
     };
   },
-  parse: parseTailNarrative
+  parse: parseOpenCodeJson,
+  sessionId: parseSessionId
 };
 
 export const opencodeAdapter: AgentAdapter = {

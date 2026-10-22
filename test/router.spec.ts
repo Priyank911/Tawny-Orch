@@ -56,10 +56,15 @@ describe('router', () => {
   });
 
   it('manual fallback exists when nothing matches a role', () => {
-    const agents = [{ status: fakeAgent('codex'), currentLoad: 0 }];
-    // research is not in codex roles
+    const agents = [{ status: fakeAgent('cursor-agent'), currentLoad: 0 }];
+    // Cursor Agent is intentionally restricted to implementation in this catalog.
     const ranked = pickAgent(stage(null), 'research', agents, []);
     expect(ranked?.agentId).toBe('manual');
+  });
+
+  it('allows Codex read-only roles supported by its read-only sandbox adapter', () => {
+    const ranked = pickAgent(stage(null), 'research', [{ status: fakeAgent('codex'), currentLoad: 0 }], []);
+    expect(ranked?.agentId).toBe('codex');
   });
 
   it('factor load penalties reduce score', () => {

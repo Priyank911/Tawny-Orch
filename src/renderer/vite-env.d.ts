@@ -25,6 +25,8 @@ declare global {
       getRuns: () => Promise<RunSnapshot[]>;
       getRun: (runId: string) => Promise<RunSnapshot | null>;
       cancelRun: (runId: string) => Promise<void>;
+      openRunArtifact: (input: { runId: string; stageId?: string; name: 'task_contract' | 'agent_session' | 'agent_result' | 'final_report' | 'worktree' | 'selected_workspace' | 'published_output' }) => Promise<void>;
+      openAgentSession: (input: { runId: string; stageId: string }) => Promise<void>;
       escalateStage: (input: {
         runId: string; stageId: string;
         reassignAgentId?: string | null; manualComplete?: boolean; summary?: string; skip?: boolean;

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { projectConfigSchema } from '../src/shared/contracts';
+import { projectMetadataDirectory } from '../src/main/projectMetadata';
 
 const electron = vi.hoisted(() => ({ userData: '', showOpenDialog: vi.fn() }));
 const faults = vi.hoisted(() => ({ rename: false }));
@@ -51,7 +52,8 @@ describe('project persistence', () => {
     const config = projectConfigSchema.parse({ templateId: 'duo' });
     await saveProjectConfig(folder, config);
     expect(await readProjectConfig(folder)).toMatchObject({ ...config, updatedAt: expect.any(String) });
-    expect(JSON.parse(await readFile(join(folder, '.tawny-orch', 'config.json'), 'utf8')).version).toBe(1);
+    expect(JSON.parse(await readFile(join(projectMetadataDirectory(electron.userData, folder), 'config.json'), 'utf8')).version).toBe(1);
+    expect(await readdir(folder)).not.toContain('.tawny-orch');
   });
 
   it('returns defaults for missing or malformed config without overwriting it', async () => {
@@ -61,6 +63,15 @@ describe('project persistence', () => {
     await writeFile(file, '{broken');
     expect(await readProjectConfig(folder)).toEqual(projectConfigSchema.parse({}));
     expect(await readFile(file, 'utf8')).toBe('{broken');
+  });
+
+  it('reads legacy project config and writes the next save into app data', async () => {
+    await mkdir(join(folder, '.tawny-orch'), { recursive: true });
+    await writeFile(join(folder, '.tawny-orch', 'config.json'), JSON.stringify({ version: 1, templateId: 'duo', stages: [] }));
+    expect(await readProjectConfig(folder)).toMatchObject({ templateId: 'duo' });
+    await saveProjectConfig(folder, projectConfigSchema.parse({ templateId: 'solo' }));
+    expect(await readProjectConfig(folder)).toMatchObject({ templateId: 'solo' });
+    expect(await readFile(join(projectMetadataDirectory(electron.userData, folder), 'config.json'), 'utf8')).toContain('solo');
   });
 
   it('preserves the old file and removes temporary files if atomic replacement fails', async () => {
@@ -75,7 +86,7 @@ describe('project persistence', () => {
   it('keeps concurrent writes complete', async () => {
     await Promise.all(Array.from({ length: 12 }, (_, index) => saveProjectConfig(folder, projectConfigSchema.parse({ templateId: `template-${index}` }))));
     expect((await readProjectConfig(folder)).templateId).toMatch(/^template-\d+$/);
-    expect(await readdir(join(folder, '.tawny-orch'))).toEqual(['config.json']);
+    expect(await readdir(projectMetadataDirectory(electron.userData, folder))).toEqual(['config.json']);
   });
 
   it('requires existing directories for config writes and stats', async () => {

@@ -16,7 +16,7 @@ describe.skipIf(process.env.TAWNY_DAEMON_UTILITY_TEST !== '1')('real Electron ut
     await mkdir(project);
     const fixture = (id: string, status: RunSnapshot['status']): RunSnapshot => ({
       id, status, projectPath: project, projectName: 'project', goal: 'Plan a local change', templateId: 'manual',
-      branchPrefix: 'test', createdAt: new Date().toISOString(), stages: [{
+      branchPrefix: 'test', requestedOutputs: [], publishedOutputs: [], publicationIssues: [], createdAt: new Date().toISOString(), stages: [{
         spec: { id: 'plan', title: 'Plan', role: 'plan', agentId: 'manual', acceptanceCommands: [], allowedFiles: [], forbiddenFiles: [], retries: 0 },
         status: status === 'running' ? 'running' : status === 'done' ? 'passed' : 'queued',
         agentId: 'manual', attempt: 1, summary: '', failureReason: '', gates: [], artifacts: []

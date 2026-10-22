@@ -1,7 +1,7 @@
 import type { AgentAdapter, AdapterContext, AdapterHandle } from './base';
 import type { ArtifactBundle, AgentTier } from '../../shared/contracts';
 import { abort, isReadOnlyContract, runHeadless, type HeadlessPlan } from './headless';
-import { parseClaudeStreamJson } from './childRunner';
+import { parseClaudeStreamJson, parseSessionId } from './childRunner';
 
 const plan: HeadlessPlan = {
   commandLine: 'claude',
@@ -11,7 +11,8 @@ const plan: HeadlessPlan = {
     '--permission-mode', isReadOnlyContract(contract) ? 'plan' : 'acceptEdits',
     '--tools', isReadOnlyContract(contract) ? 'Read,Glob,Grep' : 'Read,Glob,Grep,Edit,Write',
     '--disallowedTools', 'mcp__*', '--strict-mcp-config', '--max-turns', '60'],
-  parse: parseClaudeStreamJson
+  parse: parseClaudeStreamJson,
+  sessionId: parseSessionId
 };
 
 export const claudeCodeAdapter: AgentAdapter = {

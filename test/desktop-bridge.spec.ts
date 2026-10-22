@@ -55,7 +55,8 @@ const spec: StageSpec = {
 const config: ProjectConfig = { version: 1, templateId: 'solo', stages: [spec] };
 const run: RunSnapshot = {
   id: 'run-bridge', status: 'pending', goal: 'Plan the change', projectPath, projectName: '项目 café',
-  templateId: 'solo', branchPrefix: 'tawny-orch', createdAt: '2026-10-21T00:00:00.000Z', stages: []
+  templateId: 'solo', branchPrefix: 'tawny-orch', requestedOutputs: [], publishedOutputs: [], publicationIssues: [],
+  createdAt: '2026-10-21T00:00:00.000Z', stages: []
 };
 
 describe('built desktop preload contract', () => {

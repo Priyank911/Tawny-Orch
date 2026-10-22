@@ -1,21 +1,29 @@
-import { appendFile, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import type { MemoryCategory, MemoryEntry } from '../../shared/contracts';
+import { app } from 'electron';
+import { projectMetadataDirectory, hideProjectMetadata } from '../projectMetadata';
 
-// Shared memory ledger per project: `.tawny-orch/memory.jsonl`.
+// Shared memory ledger per project in Tawny app data, keyed by project path.
 // Only the engine writes entries; contracts embed the latest entries so every
 // agent starts from the same conventions, decisions, and failures.
 
 const MEMORY_FILE = 'memory.jsonl';
 
-export function memoryFilePath(projectPath: string): string {
-  return join(projectPath, '.tawny-orch', MEMORY_FILE);
+export function memoryFilePath(projectPath: string, userDataDir = app.getPath('userData')): string {
+  return join(projectMetadataDirectory(userDataDir, projectPath), MEMORY_FILE);
 }
 
-export async function readMemory(projectPath: string, limit = 12): Promise<MemoryEntry[]> {
+export async function readMemory(projectPath: string, limit = 12, userDataDir = app.getPath('userData')): Promise<MemoryEntry[]> {
   try {
-    const raw = await readFile(memoryFilePath(projectPath), 'utf8');
+    let raw: string;
+    try { raw = await readFile(memoryFilePath(projectPath, userDataDir), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      raw = await readFile(join(projectPath, '.tawny-orch', MEMORY_FILE), 'utf8');
+      hideProjectMetadata(projectPath);
+    }
     const entries = raw
       .split(/\r?\n/)
       .filter((line) => line.trim().length > 0)
@@ -44,17 +52,28 @@ const MAX_ENTRY_CHARS = 4000;
 
 export async function writeMemoryEntries(
   projectPath: string,
-  entries: Array<{ category: MemoryCategory; content: string; sourceRunId: string }>
+  entries: Array<{ category: MemoryCategory; content: string; sourceRunId: string }>,
+  userDataDir = app.getPath('userData')
 ): Promise<MemoryEntry[]> {
   if (entries.length === 0) return [];
-  const file = memoryFilePath(projectPath);
+  const file = memoryFilePath(projectPath, userDataDir);
   await mkdir(join(file, '..'), { recursive: true });
+  hideProjectMetadata(projectPath);
   const written: MemoryEntry[] = [];
   let existing: MemoryEntry[] = [];
   try {
-    existing = await readMemory(projectPath, 500);
+    existing = await readMemory(projectPath, 500, userDataDir);
   } catch {
     existing = [];
+  }
+  try {
+    await access(file);
+  } catch {
+    const legacy = join(projectPath, '.tawny-orch', MEMORY_FILE);
+    try {
+      await access(legacy);
+      if (existing.length) await writeFile(file, `${existing.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
+    } catch { /* No legacy file to migrate. */ }
   }
   const seen = new Set(existing.map((entry) => `${entry.category}:${entry.content}`));
   const fresh = entries.filter((entry) => !seen.has(`${entry.category}:${entry.content}`));

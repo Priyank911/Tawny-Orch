@@ -42,7 +42,9 @@ export const agentCatalog: AgentCatalogEntry[] = [
     installHint: 'npm install -g @openai/codex',
     costClass: 0.4,
     latencyClass: 0.45,
-    roles: ['execute', 'test']
+    // The adapter uses Codex's read-only sandbox for research, planning,
+    // review, and delivery; execution/testing use workspace-write.
+    roles: ['research', 'plan', 'execute', 'test', 'review', 'deliver']
   },
   {
     id: 'gemini-cli',
@@ -78,7 +80,9 @@ export const agentCatalog: AgentCatalogEntry[] = [
     installHint: 'npm install -g opencode-ai',
     costClass: 0.45,
     latencyClass: 0.5,
-    roles: ['execute', 'research']
+    // The adapter's plan profile is read-only and is used for all non-writing
+    // stages, including plan, review, and delivery.
+    roles: ['research', 'plan', 'execute', 'test', 'review', 'deliver']
   },
   {
     id: 'antigravity',
@@ -114,7 +118,7 @@ export const agentCatalog: AgentCatalogEntry[] = [
     installHint: 'npm install -g @qwen-code/qwen-code',
     costClass: 0.2,
     latencyClass: 0.45,
-    roles: ['execute', 'research']
+    roles: ['research', 'plan', 'execute', 'test', 'review', 'deliver']
   },
   {
     id: 'manual',
@@ -140,7 +144,8 @@ export async function whereCommand(command: string): Promise<boolean> {
   const windowsCommand: WindowsCommand = { command };
   if (!windowsCommand.command) return false;
   return new Promise((resolveWait) => {
-    const probe = spawn('where.exe', [windowsCommand.command], { windowsHide: true });
+    const lookup = process.platform === 'win32' ? 'where.exe' : 'which';
+    const probe = spawn(lookup, [windowsCommand.command], { windowsHide: true, stdio: 'ignore' });
     let settled = false;
     const done = (value: boolean) => {
       if (settled) return;
@@ -160,7 +165,7 @@ export async function probeVersion(entry: AgentCatalogEntry, timeoutMs = 8000): 
     let probe: ReturnType<typeof spawn>;
     let output = '';
     let settled = false;
-    const done = (value: string) => {
+    const done = (value: string, code?: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(killer);
@@ -169,7 +174,9 @@ export async function probeVersion(entry: AgentCatalogEntry, timeoutMs = 8000): 
       } catch {
         /* already gone */
       }
-      resolveVersion(value.trim().split(/\r?\n/, 1)[0].slice(0, 60));
+      const lines = value.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const versionLine = lines.find((line) => /\d+\.\d+/.test(line));
+      resolveVersion(code === 0 ? (versionLine ?? lines[0] ?? '').slice(0, 60) : '');
     };
     const killer = setTimeout(() => done(''), timeoutMs);
     try {
@@ -182,16 +189,16 @@ export async function probeVersion(entry: AgentCatalogEntry, timeoutMs = 8000): 
       done('');
       return;
     }
-    probe.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
-    probe.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+    probe.stdout?.on('data', (chunk: Buffer) => { output = `${output}${chunk.toString()}`.slice(-4096); });
+    probe.stderr?.on('data', (chunk: Buffer) => { output = `${output}${chunk.toString()}`.slice(-4096); });
     probe.on('error', () => done(''));
-    probe.on('close', () => done(output));
+    probe.on('close', (code) => done(output, code));
   });
 }
 
 export function isVersionLike(output: string): boolean {
   const normalized = output.trim().toLowerCase();
   if (!normalized) return false;
-  // CLI version strings like "1.0.32 (Claude Code)", "codex 0.44.0", or banner text.
-  return /\d+\.\d+/.test(normalized.split(/\r?\n/, 1)[0].slice(0, 120));
+  // Some Windows shims print access warnings before the actual version line.
+  return normalized.split(/\r?\n/).some((line) => /\d+\.\d+/.test(line.slice(0, 120)));
 }

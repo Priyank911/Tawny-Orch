@@ -56,12 +56,14 @@ export function buildContract(inputs: ContractInputs): TaskContract {
     projectPath: run.projectPath,
     projectName: run.projectName,
     worktreePath: inputs.worktreePath,
+    requestedOutputs: run.requestedOutputs,
     baseBranch: inputs.baseBranch,
     planSummary: summaryFor('plan'),
     researchSummary: summaryFor('research'),
     diffSoFar: inputs.priorDiffs,
     testReport: summaryFor('test'),
     reviewFindings: summaryFor('review'),
+    verifiedHandoffs: [],
     memory: inputs.memoryEntries,
     constraints: {
       allowedFiles: stage.spec.allowedFiles,
@@ -79,7 +81,7 @@ export function buildContract(inputs: ContractInputs): TaskContract {
       hint:
         stage.spec.role === 'deliver'
           ? 'The delivery summary becomes the run report; be concrete and complete.'
-          : 'The runner parses this file to hand your work to the next stage. Do not stream substitutes; write the file.'
+          : 'Return the JSON object as your final response. Tawny validates and writes the result artifact after your process exits.'
     }
   };
 }

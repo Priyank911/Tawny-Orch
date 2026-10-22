@@ -216,7 +216,8 @@ const MOCK_BRIDGE = String.raw`
     templateId: 'solo', branchPrefix: 'test', status: 'done', createdAt: '2026-10-21T10:00:00.000Z',
     stages: stages.map(spec => ({ spec, status: 'passed', agentId: agent.id, attempt: 1, summary: 'Fixture self-report',
       failureReason: '', gates: [{ gate: 'acceptance', result: 'pass', reason: 'Fixture command exited 0', durationMs: 1 }],
-      artifacts: [{ name: 'Task packet', path: project.path + '/packet.json' }] })) };
+      artifacts: [{ name: 'Task packet', path: project.path + '/packet.json' },
+        { name: 'prior_attempt:1:fixture', path: project.path + '/prior-attempt.json' }] })) };
   const state = { creates: [], saved: null, audioCalls: 0, audioBytes: 0, rejectNext: false, errors: [], actions: [] };
   const subscriptions = new Set();
   let created;
@@ -229,6 +230,9 @@ const MOCK_BRIDGE = String.raw`
     subscribe: listener => { subscriptions.add(listener); return () => subscriptions.delete(listener); },
     getSettings: async () => clone(settings), saveSettings: async value => { state.saved = clone(value); },
     getAgents: async () => [clone(agent), { ...clone(agent), id: 'manual', family: 'human', label: 'Manual slot' },
+      { ...clone(agent), id: 'codex', label: 'Codex', roles },
+      { ...clone(agent), id: 'opencode', label: 'OpenCode', roles },
+      { ...clone(agent), id: 'cursor-agent', label: 'Cursor Agent', roles: ['execute'] },
       { ...clone(agent), id: 'missing', detected: false, health: 'not_installed', label: 'Not installed' }],
     detectAgents: async () => [], getProject: async () => clone(project), attachProject: async () => clone(project),
     getProjectConfig: async () => clone(config), saveProjectConfig: async () => {},
@@ -339,6 +343,8 @@ describe.skipIf(!enabled)('desktop UI: bounded mocked renderer interactions', ()
     expect(await cdp.evaluate(`document.querySelector('.run-detail').hidden`)).toBe(false);
     expect(await cdp.evaluate(`document.querySelector('.gate-list').textContent`)).toContain('Fixture command exited 0');
     expect(await cdp.evaluate(`document.querySelector('.artifact-list code').textContent`)).toContain('packet.json');
+    expect(await cdp.evaluate(`document.querySelector('.artifact-list').textContent`)).not.toContain('prior_attempt');
+    expect(await cdp.evaluate(`Array.from(document.querySelectorAll('.run-detail .helper')).some(element => element.textContent.includes('Previous attempt details are preserved'))`)).toBe(true);
     await cdp.key('Enter');
     expect(await cdp.evaluate(`document.querySelector('.run-detail').hidden`)).toBe(true);
     await click(cdp, 'Settings');
@@ -347,46 +353,41 @@ describe.skipIf(!enabled)('desktop UI: bounded mocked renderer interactions', ()
     expect(cdp.exceptions).toEqual([]);
   }, 15_000);
 
-  it('saves explicit free/local/off access, forces free-only/$0, and preserves unknown and hidden settings', async () => {
+  it('lets a project remove and restore an optional pipeline stage', async () => {
+    const { cdp } = desktop;
+    await click(cdp, 'Pipeline');
+    await cdp.waitFor(`document.querySelectorAll('.stage-editor').length === 6`, 'saved pipeline stages');
+    expect(await cdp.evaluate(`Array.from(document.querySelector('#agent-research').options).some(option => option.value === 'codex')`)).toBe(true);
+    expect(await cdp.evaluate(`Array.from(document.querySelector('#agent-research').options).some(option => option.value === 'opencode')`)).toBe(true);
+    expect(await cdp.evaluate(`Array.from(document.querySelector('#agent-research').options).some(option => option.value === 'cursor-agent')`)).toBe(false);
+    await cdp.evaluate(`document.querySelector('button[aria-label="Remove Research stage"]').click()`);
+    await cdp.waitFor(`document.querySelectorAll('.stage-editor').length === 5`, 'research removed');
+    expect(await cdp.evaluate(`Array.from(document.querySelectorAll('.stage-editor legend')).some(element => element.textContent.includes('Research'))`)).toBe(false);
+    await field(cdp, 'add-pipeline-stage', 'research');
+    await cdp.waitFor(`document.querySelectorAll('.stage-editor').length === 6`, 'research restored');
+    expect(await cdp.evaluate(`Array.from(document.querySelectorAll('.stage-editor legend')).some(element => element.textContent.includes('Research'))`)).toBe(true);
+    expect(cdp.exceptions).toEqual([]);
+  }, 15_000);
+
+  it('removes access-confirmation controls and preserves legacy settings without making them a dispatch gate', async () => {
     const { cdp } = desktop;
     await click(cdp, 'Settings');
-    await cdp.waitFor(`!!document.querySelector('.entitlement-editor')`, 'entitlements');
-    expect(await cdp.evaluate(`document.querySelectorAll('.entitlement-editor').length`)).toBe(1);
-    expect(await cdp.evaluate(`Array.from(document.querySelectorAll('.entitlement-editor option')).map(option => option.value)`)).toEqual(['off', 'free', 'local']);
-    expect(await cdp.evaluate(`document.getElementById('entitlement-fixture-local').value`)).toBe('off');
-    await field(cdp, 'entitlement-fixture-local', 'free');
-    await field(cdp, 'requests-fixture-local', '-1');
-    expect(await cdp.evaluate(`document.querySelector('.settings-form').checkValidity()`)).toBe(false);
-    await click(cdp, 'Save settings');
-    expect(await cdp.evaluate(`window.__desktopFixture.state.saved`)).toBeNull();
-    // An invalid intermediate number must remain editable rather than throw from schema validation.
-    await field(cdp, 'requests-fixture-local', '3');
-    await field(cdp, 'expiry-fixture-local', '2030-12-01T14:30');
+    await cdp.waitFor(`!!document.querySelector('.settings-form')`, 'settings form');
+    expect(await cdp.evaluate(`document.querySelectorAll('.entitlement-editor, #budget-settings').length`)).toBe(0);
+    expect(await cdp.evaluate(`document.querySelector('.privacy-panel').textContent`)).toContain('Configure a local model');
     await click(cdp, 'Save settings');
     await cdp.waitFor(`window.__desktopFixture.state.saved !== null`, 'settings save');
     const saved = await cdp.evaluate<AppSettings & {
           budget: NonNullable<AppSettings['budget']>; futureDesktopSetting: { enabled: boolean; value: string };
         }>(`window.__desktopFixture.state.saved`);
-    expect(saved.budget).toMatchObject({ policy: 'free-only', maxUsd: 0, spentUsd: 3 });
-    expect(saved.budget.entitlements['fixture-local']).toMatchObject({ kind: 'free', userConfirmed: true, maxCostUsd: 0, remainingRequests: 3 });
-    expect(Number.isFinite(Date.parse(saved.budget.entitlements['fixture-local'].expiresAt ?? ''))).toBe(true);
-    expect(saved.budget.entitlements['fixture-local'].authenticated).toBeUndefined();
-    expect(saved.budget.entitlements.absent).toEqual({ kind: 'paid', userConfirmed: true, maxCostUsd: 2 });
+    expect(saved.budget).toMatchObject({ policy: 'quality-first', maxUsd: 50, spentUsd: 3 });
+    expect(saved.budget.entitlements).toEqual({ absent: { kind: 'paid', userConfirmed: true, maxCostUsd: 2 } });
     expect(saved.futureDesktopSetting).toEqual({ enabled: true, value: 'preserve-unknown' });
     expect(saved.cloudflareAccountId).toBe('keep-account');
     expect(saved.cloudflareApiToken).toBe('keep-token');
-    await field(cdp, 'entitlement-fixture-local', 'local');
-    await field(cdp, 'requests-fixture-local', '0');
-    await click(cdp, 'Save settings');
-    await cdp.waitFor(`window.__desktopFixture.state.saved.budget.entitlements['fixture-local'].kind === 'local'`, 'local confirmation');
-    expect(await cdp.evaluate(`window.__desktopFixture.state.saved.budget.entitlements['fixture-local'].remainingRequests`)).toBe(0);
-    await field(cdp, 'entitlement-fixture-local', 'off');
-    await click(cdp, 'Save settings');
-    await cdp.waitFor(`window.__desktopFixture.state.saved.budget.entitlements['fixture-local'].userConfirmed === false`, 'revoked confirmation');
-    expect(await cdp.evaluate(`window.__desktopFixture.state.saved.budget.entitlements['fixture-local'].kind`)).toBe('unknown');
     expect(await cdp.evaluate(`window.__desktopFixture.state.errors`)).toEqual([]);
     expect(cdp.exceptions).toEqual([]);
-    await cdp.screenshot('settings-entitlements');
+    await cdp.screenshot('settings-agent-access-removed');
   }, 15_000);
 
   it('never dispatches a typed goal until explicit review confirmation, traps focus, and handles rejection', async () => {
@@ -406,7 +407,7 @@ describe.skipIf(!enabled)('desktop UI: bounded mocked renderer interactions', ()
     expect(await cdp.evaluate(`window.__desktopFixture.state.creates.length`)).toBe(0);
     await click(cdp, 'Review run');
     await cdp.waitFor(`!!document.querySelector('dialog[open]')`, 'second review');
-    expect(await cdp.evaluate(`document.querySelector('dialog .free-only-notice').textContent`)).toContain('manual slot');
+    expect(await cdp.evaluate(`document.querySelector('dialog .provider-notice').textContent`)).toContain('configured model');
     await cdp.screenshot('review-before-dispatch');
     await cdp.evaluate(`window.__desktopFixture.state.rejectNext = true`);
     await click(cdp, 'Confirm & dispatch');
