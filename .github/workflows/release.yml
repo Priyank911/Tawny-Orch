@@ -1,0 +1,67 @@
+name: Windows early preview release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package-windows:
+    name: Build and publish Windows installer
+    runs-on: windows-latest
+    env:
+      TAWNY_FIREBASE_API_KEY: ${{ vars.TAWNY_FIREBASE_API_KEY }}
+      TAWNY_GOOGLE_CLIENT_ID: ${{ vars.TAWNY_GOOGLE_CLIENT_ID }}
+      TAWNY_GOOGLE_CLIENT_SECRET: ${{ secrets.TAWNY_GOOGLE_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Match release tag to app version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/check-release-tag.mjs
+      - name: Require Firebase sign-in configuration
+        run: node -e "if (!process.env.TAWNY_FIREBASE_API_KEY || !process.env.TAWNY_GOOGLE_CLIENT_ID || !process.env.TAWNY_GOOGLE_CLIENT_SECRET) { console.error('Set the TAWNY_FIREBASE_API_KEY and TAWNY_GOOGLE_CLIENT_ID GitHub Actions Variables and TAWNY_GOOGLE_CLIENT_SECRET GitHub Actions Secret before publishing configured installers.'); process.exit(1); }"
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - name: Package unsigned Windows installer
+        run: pnpm exec electron-builder --config electron-builder.yml --win nsis --x64 --publish never
+      - name: Create Windows update manifest
+        run: node scripts/write-windows-update-manifest.mjs release
+      - name: Stage only public release assets
+        shell: bash
+        run: |
+          mkdir -p release/public-assets
+          for installer in release/*.exe; do
+            if [[ "$installer" != *__uninstaller.exe ]]; then cp "$installer" release/public-assets/; fi
+          done
+          cp release/*.blockmap release/public-assets/
+          cp release/latest.yml release/public-assets/latest.yml
+      - name: Add install notes and SHA-256 checksums
+        shell: bash
+        run: |
+          cp docs/INSTALL-PREVIEW.md release/public-assets/INSTALL-PREVIEW.md
+          python scripts/write-sha256-manifest.py release/public-assets
+      - name: Create or update the early preview release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          title="Tawny Orch ${RELEASE_TAG} — Windows Early Preview"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/public-assets/* --clobber
+            gh release edit "$RELEASE_TAG" --title "$title" --notes-file release/public-assets/INSTALL-PREVIEW.md --prerelease
+          else
+            gh release create "$RELEASE_TAG" release/public-assets/* --title "$title" --notes-file release/public-assets/INSTALL-PREVIEW.md --prerelease
+          fi

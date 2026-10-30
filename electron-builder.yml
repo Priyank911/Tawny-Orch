@@ -1,0 +1,46 @@
+appId: com.tawnyorch.desktop
+productName: Tawny Orch
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+publish:
+  provider: github
+  owner: Priyank911
+  repo: Tawny-Orch
+  releaseType: prerelease
+asar: true
+artifactName: Tawny-Orch-${version}-${os}-${arch}.${ext}
+win:
+  icon: build/icon.ico
+  signExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+mac:
+  identity: null
+  hardenedRuntime: false
+  target:
+    - target: dmg
+      arch:
+        - universal
+linux:
+  category: Development
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64

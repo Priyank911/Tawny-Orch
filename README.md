@@ -12,7 +12,7 @@ Tawny Orch is built with Electron, React, and TypeScript. The orchestration engi
 | Workflow | Staged project pipeline with agent routing, handoff artifacts, gates, retries, and escalation |
 | Agent access | Selected local CLIs plus a human operated manual packet slot |
 | Agent access | No Tawny free-tier confirmation gate; selected CLIs use their saved provider/model configuration |
-| Storage | Local project and app data; JSON and JSONL files in the current implementation |
+| Storage | Local project and app data; account refresh tokens use OS-backed encrypted storage |
 | Mobile | Not implemented; no phone pairing or remote connection endpoint |
 
 This is a substantial desktop prototype, not the full multi-phase product in the architecture document. The status tables below record what the source supports today and what remains planned.
@@ -38,6 +38,12 @@ pnpm dev
 New runs use the selected project folder as the execution workspace, so requested files and code changes appear there as the agents work. Tawny captures a pre-stage snapshot, checks allowed paths and secrets, and records stage evidence. Pipeline configuration and shared memory are stored under Tawny's app-data directory; manual-agent packets and run evidence are stored with the run. New runs therefore do not create a `.tawny-orch/` directory in the selected project. Existing legacy `.tawny-orch/` configuration and memory are read and migrated forward on the next save. Older runs that already have a recorded worktree continue to use that workspace. Use **Open selected project folder** on a new run to navigate to the exact folder agents use.
 
 Typed goals work without a transcription provider. Optional voice capture requires a Groq API key, network access, microphone permission, and provider allowance. Voice audio is sent to Groq for transcription; it is not an offline path.
+
+### Google account sign-in
+
+The first launch requires a Google account configured through Firebase Authentication. Tawny opens Google in your system browser, returns through a temporary loopback callback protected by OAuth state and PKCE, then exchanges the Google identity token with Firebase. Google currently requires the Desktop OAuth client's generated secret in that exchange; because a desktop app is a public client, the value is extractable and is not a real server-side secret. The account refresh token remains in Electron's main process and is encrypted through the operating-system credential service; it is not placed in the Windows registry. If the OS keychain is unavailable, sign-in lasts for the current app session. See [Google authentication setup](docs/GOOGLE-AUTH-SETUP.md) for Firebase/Google Cloud setup and release build variables.
+
+Tawny does not upload behavior analytics. Settings and the signed-out screen can export a user-initiated local diagnostic summary containing app/platform/auth/update health and grouped local event counts. It excludes email, project paths, prompts, raw logs and account tokens; the save dialog writes it only where you choose.
 
 ### Development checks
 
@@ -69,10 +75,20 @@ flowchart TB
   HUMAN[Human-operated IDE or manual slot]
   ARTIFACTS[Packets · contracts · run evidence\nreports · events · project memory]
   SETTINGS[Local settings and credentials]
+  GOOGLE[Google OAuth · system browser]
+  FIREBASE[Firebase Authentication]
+  KEYCHAIN[OS credential store · encrypted refresh token]
+  DIAGNOSTICS[User-exported local health summary]
   TRANSCRIBE[Optional Groq transcription]
 
   MAIN --> CATALOG
   MAIN <--> SETTINGS
+  UI -->|sign-in request| PRELOAD
+  MAIN -->|OAuth PKCE| GOOGLE
+  GOOGLE -->|loopback callback| MAIN
+  MAIN -->|Google identity token| FIREBASE
+  MAIN <--> KEYCHAIN
+  MAIN --> DIAGNOSTICS
   ENGINE <--> PROJECT
   ENGINE --> CLI
   ENGINE --> HUMAN
@@ -168,13 +184,38 @@ Review acceptance commands before saving a pipeline. Those commands execute in t
 
 **Mobile is not implemented in this checkout.** `pnpm dev` opens a local Electron desktop app, and the current utility process communicates with Electron over a local process channel. There is no HTTP/WebSocket endpoint, phone PWA, QR pairing, remote approval API, or outbound encrypted relay. A phone cannot connect securely to this local development build. The architecture document places PWA/relay work in a later phase; exposing a local port would not implement that security design.
 
+## Desktop packaging, releases, and updates
+
+The public release workflow builds an unsigned Windows x64 early-preview installer. CI still typechecks, tests, and builds on Windows, macOS, and Linux, but only Windows installers are published for download. A regular commit push does not publish a release; a matching version tag does.
+
+### Create a release
+
+1. Update `version` in `package.json` and run `pnpm install` so `pnpm-lock.yaml` records the same version.
+2. Commit and push the change to `main`. Wait for the cross-platform CI checks to pass.
+3. Tag that exact commit with the matching version, for example `git tag v0.1.1`.
+4. Push the tag with `git push origin v0.1.1`. The Windows release workflow checks the tag against `package.json`, typechecks, runs the full test suite, builds/packages the NSIS installer, creates the auto-update manifest, generates `SHA256SUMS.txt`, and publishes a **Windows Early Preview** GitHub Release.
+5. Review the published release assets and notes before sharing the release link.
+
+Use a new, higher version for every release. If a tag needs correction, fix the workflow or assets and rerun that tag's workflow; do not publish a different binary under an existing version.
+
+### What users get
+
+- Windows x64: an assisted NSIS `.exe` installer, `.blockmap`, and `latest.yml` update metadata.
+- `SHA256SUMS.txt` and Windows early-preview install guidance in the GitHub release notes and assets.
+
+On packaged Windows builds, electron-updater checks the official public GitHub Releases feed at startup and about once a day. When a new release appears, the profile icon gets an update badge and Windows can show a desktop notification while Tawny is hidden. The user chooses **Download update**; Tawny checks the downloaded installer against the SHA-512 digest in `latest.yml`, shows progress, waits for agent runs to finish, and then closes, installs, and reopens. Other platforms do not receive public installers or use this Windows auto-update flow. The check and download use public GitHub releases; Tawny does not send project paths, prompts, or usage data for the check.
+
+Unsigned Windows installers may show SmartScreen or unknown-publisher warnings. A checksum confirms that a downloaded file matches the published asset; it does not establish publisher identity or certify that software is safe. Read [docs/INSTALL-PREVIEW.md](docs/INSTALL-PREVIEW.md) before installing a preview build.
+
+Local packaging commands remain available for Windows, macOS, and Linux development, but only `pnpm package:win` corresponds to the current public release. Do not add signing secrets unless a later release intentionally adopts signed distribution.
+
 ## Architecture and implementation status
 
 The product architecture describes a broader phased target. This table is an audit of this repository, not a claim of release readiness.
 
 | Area | Implemented now | Still planned or incomplete |
 | --- | --- | --- |
-| Windows desktop | Electron shell, tray, hotkey, voice pill, dashboard, context-isolated preload | Production installer, code signing, public beta workflow |
+| Desktop | Electron shell, tray, hotkey, voice pill, dashboard, context-isolated preload; unsigned Windows preview packaging; cross-platform CI and tag-based Windows prerelease workflow | Code signing, broader Windows installer/update smoke testing, stable release process |
 | Engine process | Electron utility process and local process-message protocol | Standalone daemon, complete crash-survival and Windows Job Object guarantees |
 | Projects and settings | Local project registry/settings; Electron `safeStorage` for credentials where available | Database-backed settings/state and full migration strategy |
 | Voice and intent | Groq capture/transcription, local grammar, typed goals, review before dispatch | Local Whisper/VAD fallback and general LLM-backed compiler to the full architecture RunSpec |
@@ -194,12 +235,12 @@ The product architecture describes a broader phased target. This table is an aud
 | Week 4 — planning, execution and isolated handoffs | **Partial:** engine, contracts, packets, retries and Git worktree support exist; full isolation guarantees do not |
 | Week 5 — gates and independent verification | **Partial:** structured result, safety/scope checks, configured acceptance and family constraints exist; broad contradiction system does not |
 | Week 6 — user demo gate | **Not evidenced:** no demo/interview results are checked into this repository |
-| Week 7 — install flow and WSL | **Not implemented** |
+| Week 7 — install flow and WSL | **Partial:** unsigned Windows preview packaging and in-app update/restart flow are configured; WSL discovery and signed production install remain incomplete |
 | Week 8 — signed quota data and full failover | **Partial:** bounded failover exists; no signed live quota feed or cost-aware dispatch |
 | Week 9 — advanced shared memory | **Partial:** local JSONL memory exists; SQLite search, embeddings and trust scoring do not |
 | Week 10 — relay, PWA and phone approvals | **Not implemented** |
 | Week 11 — accounts and billing | **Not implemented** |
-| Week 12 — signed release and public beta | **Not implemented** |
+| Week 12 — signed release and public beta | **Partial:** unsigned early-preview release automation is configured; signing/notarization and public-beta validation are not implemented |
 
 ## Data locations and repository map
 

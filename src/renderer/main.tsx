@@ -1,11 +1,11 @@
 import { StrictMode, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  ArrowRight, Ban, Bot, Check, ChevronDown, ChevronRight, ExternalLink, FolderOpen,
-  Home as HomeIcon, Mic, RefreshCw, ScrollText, Settings2, ShieldCheck, Square, Terminal, Workflow, X
+  ArrowRight, Ban, Bot, Check, ChevronDown, ChevronRight, Download, ExternalLink, FolderOpen,
+  Home as HomeIcon, LogOut, Mic, RefreshCw, ScrollText, Settings2, ShieldCheck, Square, Terminal, Workflow, X
 } from 'lucide-react';
 import type {
-  AgentStatus, AppSettings, OrchEvent, OverlaySnapshot, PipelineLog,
+  AgentStatus, AppSettings, AppUpdateState, AuthState, OrchEvent, OverlaySnapshot, PipelineLog,
   PipelineTemplate, ProjectAttachment, ProjectConfig, RunSnapshot, StageSpec, StageStatus
 } from '../shared/contracts';
 import './styles.css';
@@ -98,6 +98,10 @@ function App(): ReactElement {
   const [events, setEvents] = useState<OrchEvent[]>([]);
   const [logs, setLogs] = useState<PipelineLog[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [authState, setAuthState] = useState<AuthState>({ status: 'checking', persistentSession: false });
+  const [authReady, setAuthReady] = useState(false);
+  const [updateState, setUpdateState] = useState<AppUpdateState>({ status: 'idle', currentVersion: '', version: '', releaseNotes: '' });
+  const [dismissedUpdate, setDismissedUpdate] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [openRunId, setOpenRunId] = useState<string>();
   const [config, setConfig] = useState<ProjectConfig | null>(null);
@@ -117,10 +121,29 @@ function App(): ReactElement {
     }, []);
 
   useEffect(() => {
+    if (!window.tawnyOrch) return;
+    let active = true;
+    const off = window.tawnyOrch.onAuthState((next) => {
+      setAuthState(next);
+      if (!['authenticated', 'offline'].includes(next.status)) setLoaded(false);
+    });
+    void window.tawnyOrch.getAuthState().then((next) => {
+      if (active) { setAuthState(next); setAuthReady(true); }
+    }).catch((error: unknown) => {
+      if (active) {
+        setAuthState({ status: 'error', persistentSession: false, message: error instanceof Error ? error.message : String(error) });
+        setAuthReady(true);
+      }
+    });
+    return () => { active = false; off(); };
+  }, []);
+
+  useEffect(() => {
     if (!window.tawnyOrch) {
       report('The desktop bridge is unavailable.', 'Open Tawny Orch in Electron, not a regular browser.');
       return;
     }
+    if (!authReady || !['authenticated', 'offline'].includes(authState.status)) return;
     let active = true;
     const api = window.tawnyOrch;
     async function load<T,>(label: string, request: () => Promise<T>, apply: (value: T) => void): Promise<void> {
@@ -129,12 +152,13 @@ function App(): ReactElement {
     }
     void Promise.all([
       load('voice status', api.getSnapshot, setSnapshot), load('settings', api.getSettings, setSettings),
+      load('update status', api.getUpdateState, setUpdateState),
       load('terminals', api.getAgents, setAgents), load('project', api.getProject, setProject),
       load('templates', api.getTemplates, setTemplates), load('runs', api.getRuns, setRuns),
       load('events', api.getEvents, (list) => setEvents(list.slice(-200))), load('logs', api.getLogs, setLogs)
     ]).then(() => { if (active) setLoaded(true); });
     const off = [
-      api.subscribe(setSnapshot), api.onMode(setMode), api.onProjectUpdate(setProject),
+      api.subscribe(setSnapshot), api.onMode(setMode), api.onProjectUpdate(setProject), api.onUpdateState(setUpdateState),
       api.onRunUpdate((run) => setRuns((list) => [run, ...list.filter((item) => item.id !== run.id)]
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 30))),
       api.onRunCreated((run) => {
@@ -153,7 +177,7 @@ function App(): ReactElement {
       void load('runs', api.getRuns, setRuns);
     }, 20_000);
     return () => { active = false; off.forEach((unsubscribe) => unsubscribe()); window.clearInterval(timer); };
-  }, [report]);
+  }, [report, authReady, authState.status]);
 
   useEffect(() => {
     let active = true;
@@ -270,6 +294,8 @@ function App(): ReactElement {
   }, [snapshot.state, releaseMic, clearCaptureTimeout, report]);
 
   const hotkey = settings?.prefs.hotkey || HOTKEY_LABEL;
+  if (!authReady || authState.status === 'checking') return <SignInScreen state={authState} busy />;
+  if (!['authenticated', 'offline'].includes(authState.status)) return <SignInScreen state={authState} />;
   if (mode === 'pill') return <VoicePill snapshot={snapshot} hotkey={hotkey} />;
   const latestRun = runs.find((run) => run.projectPath === project?.path);
   function navigate(next: Page): void {
@@ -294,24 +320,114 @@ function App(): ReactElement {
     </nav>
     <main id="workspace-page" className="page-scroll" aria-label={NAV.find((tab) => tab.id === page)?.label}>
       <div className="page-inner">
+        {authState.status === 'offline' ? <div className="auth-offline" role="status"><div><strong>Offline account session</strong><p>{authState.message}</p></div>
+          <button className="btn small" onClick={() => void window.tawnyOrch.retryAuth().then(setAuthState)}>Retry verification</button></div> : null}
         <ErrorNotice />
+        {['available', 'downloading', 'downloaded', 'installing'].includes(updateState.status) && updateState.version !== dismissedUpdate ? <UpdateNotice state={updateState}
+          onDownload={() => { void perform('Download update', async () => window.tawnyOrch.downloadUpdate()); }}
+          onDismiss={() => setDismissedUpdate(updateState.version)} /> : null}
         {!loaded ? <div className="loading-state" role="status">Loading your local workspace…</div> : null}
         {page === 'home' ? <HomePage snapshot={snapshot} project={project} agents={agents} config={config} templates={templates}
           setProject={setProject} setAgents={setAgents} quickGoal={quickGoal} setQuickGoal={setQuickGoal} loaded={loaded}
           latestRun={latestRun} hotkey={hotkey} onPipeline={() => navigate('pipeline')}
           onRun={(id) => { setOpenRunId(id); navigate('runs'); }} /> : null}
         {page === 'pipeline' ? <PipelineEditor project={project} templates={templates} config={config} setConfig={setConfig} agents={agents} /> : null}
-        {page === 'runs' ? <RunsPage runs={runs} events={events} logs={logs} openRunId={openRunId} setOpenRunId={setOpenRunId}
+        {page === 'runs' ? <RunsPage runs={runs} project={project} events={events} logs={logs} openRunId={openRunId} setOpenRunId={setOpenRunId}
           agents={agents} loaded={loaded} onStart={() => navigate('home')} refreshing={pending !== null} /> : null}
-        {page === 'settings' ? <SettingsPage settings={settings} setSettings={setSettings} logs={logs} /> : null}
+        {page === 'settings' ? <SettingsPage settings={settings} setSettings={setSettings} logs={logs} updateState={updateState}
+          setUpdateState={setUpdateState} /> : null}
         <footer className="workspace-footer"><span>Tawny Orch · Built around your project folder</span><span>Provider access, limits and charges are separate.</span></footer>
       </div>
     </main>
+    <AccountDock state={authState} updateState={updateState}
+      onDownload={() => { void perform('Download update', async () => window.tawnyOrch.downloadUpdate()); }}
+      onOpenRelease={() => { void perform('Open release page', async () => window.tawnyOrch.openUpdateRelease()); }}
+      onSignOut={() => { void window.tawnyOrch.signOut().then(setAuthState); }} />
+  </div>;
+}
+
+function GoogleMark(): ReactElement {
+  return <svg aria-hidden="true" viewBox="0 0 48 48" width="19" height="19"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.57 17.74 9.5 24 9.5Z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.91c-.58 2.96-2.26 5.48-4.73 7.18l7.45 5.78c4.35-4.02 7.35-9.94 7.35-17.43Z"/><path fill="#FBBC05" d="M10.53 28.6a14.4 14.4 0 0 1 0-9.2l-7.98-6.19a24.04 24.04 0 0 0 0 21.58l7.98-6.19Z"/><path fill="#34A853" d="M24 48c6.48 0 11.92-2.13 15.9-5.8l-7.45-5.78c-2.07 1.4-4.72 2.23-8.45 2.23-6.26 0-11.57-4.07-13.47-9.73l-7.98 6.19C6.51 42.62 14.62 48 24 48Z"/></svg>;
+}
+
+function SignInScreen({ state, busy = false }: { state: AuthState; busy?: boolean }): ReactElement {
+  const [working, setWorking] = useState(false);
+  const [exported, setExported] = useState(false);
+  const isSigningIn = state.status === 'signing_in';
+  const unavailable = state.status === 'unconfigured';
+  async function signIn(): Promise<void> {
+    setWorking(true);
+    try { await window.tawnyOrch.signInWithGoogle(); }
+    finally { setWorking(false); }
+  }
+  async function exportReport(): Promise<void> {
+    const saved = await window.tawnyOrch.exportDiagnostics();
+    setExported(saved);
+  }
+  return <main className="auth-screen">
+    <div className="auth-window-chrome"><button className="window-btn" aria-label="Hide Tawny Orch" onClick={() => window.tawnyOrch.hideWindow()}><X size={17} /></button></div>
+    <section className="auth-card" aria-labelledby="auth-title">
+      <div className="auth-brand"><span className="brand-badge"><img src="./tawny-orch-mark.svg" alt="" /></span><span>Tawny <b>Orch</b></span></div>
+      <span className="eyebrow">YOUR LOCAL-FIRST AGENT WORKSPACE</span>
+      <h1 id="auth-title">Welcome to Tawny Orch.</h1>
+      <p className="auth-intro">Sign in once to unlock your workspace. Your projects and agent sessions stay on this device.</p>
+      {state.message ? <div className={`auth-message ${state.status === 'error' || unavailable ? 'error' : ''}`} role="status">{state.message}</div> : null}
+      {isSigningIn ? <div className="auth-progress" role="status"><span className="auth-spinner" />Waiting for Google in your browser…</div> : null}
+      {!unavailable ? <button className="google-signin" disabled={busy || working || isSigningIn}
+        onClick={() => void signIn()}><GoogleMark />{isSigningIn ? 'Continue in your browser' : 'Continue with Google'}</button> : null}
+      {isSigningIn ? <button className="text-btn auth-cancel" onClick={() => void window.tawnyOrch.cancelGoogleSignIn()}>Cancel sign-in</button> : null}
+      {state.status === 'error' ? <button className="text-btn auth-retry" onClick={() => void window.tawnyOrch.signInWithGoogle()}>Try again</button> : null}
+      <div className="auth-foot"><ShieldCheck size={16} /><span>Google verifies your account in your browser. Tawny stores the session encrypted by your operating system.</span></div>
+      <button className="text-btn auth-diagnostics" onClick={() => void exportReport()}>{exported ? 'Diagnostic report saved.' : 'Export a local diagnostic summary'}</button>
+    </section>
+    <div className="auth-side-note"><span className="dot green" /> Your tools remain yours. Sign-in protects this local workspace.</div>
+  </main>;
+}
+
+function AccountDock({ state, updateState, onDownload, onOpenRelease, onSignOut }: {
+  state: AuthState; updateState: AppUpdateState; onDownload: () => void; onOpenRelease: () => void; onSignOut: () => void;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+  const user = state.user;
+  const initials = (user?.displayName || user?.email || 'G').slice(0, 1).toUpperCase();
+  useEffect(() => setImageFailed(false), [user?.photoUrl]);
+  return <div className="account-dock">
+    <button className={`account-avatar${updateState.status === 'available' || updateState.status === 'downloaded' ? ' has-update' : ''}`} data-email={user?.email ?? ''} aria-label={`Account: ${user?.email ?? ''}${updateState.status === 'available' ? ', update available' : ''}`} aria-expanded={open} onClick={() => setOpen(!open)} title={user?.email}>
+      {user?.photoUrl && !imageFailed ? <img src={user.photoUrl} alt="" onError={() => setImageFailed(true)} /> : <span>{initials}</span>}
+      {updateState.status === 'available' || updateState.status === 'downloaded' ? <i className="account-update-dot" aria-hidden="true" /> : null}
+    </button>
+    {open ? <section className="account-popover" aria-label="Signed-in account"><strong>{user?.displayName}</strong><span>{user?.email}</span>
+      <small>{state.persistentSession ? 'Saved securely on this device' : 'Session lasts until Tawny closes'}</small>
+      {updateState.status !== 'idle' && updateState.status !== 'current' ? <div className="profile-update">
+        <div className="profile-update-heading"><Download size={14} /><strong>{updateState.status === 'available' ? `Tawny ${updateState.version} is ready` : updateState.status === 'downloading' ? 'Downloading update' : updateState.status === 'downloaded' ? 'Update downloaded' : updateState.status === 'installing' ? 'Installing update' : updateState.status === 'checking' ? 'Checking for updates' : 'Update status'}</strong></div>
+        {updateState.status === 'downloading' ? <><progress max={100} value={updateState.percent ?? 0} /><span className="helper">{Math.round(updateState.percent ?? 0)}% · {updateState.message}</span></> : null}
+        {updateState.status === 'error' ? <span className="helper">{updateState.message}</span> : null}
+        {updateState.status === 'available' ? <button className="btn primary small" onClick={onDownload}><Download size={13} />Download update</button> : null}
+        {updateState.status === 'downloaded' ? <span className="helper">Downloaded. Tawny will restart after active agent runs finish.</span> : null}
+        {updateState.status === 'installing' ? <span className="helper">Tawny will reopen when installation finishes.</span> : null}
+        {updateState.status === 'error' ? <button className="btn small" onClick={onOpenRelease}><ExternalLink size={13} />Open release page</button> : null}
+      </div> : null}
+      <button className="btn small danger" onClick={onSignOut}><LogOut size={14} />Sign out</button>
+    </section> : null}
   </div>;
 }
 
 function PageHeading({ eyebrow, title, children, action }: { eyebrow: string; title: string; children: ReactNode; action?: ReactNode }): ReactElement {
   return <div className="page-heading"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{children}</p></div>{action}</div>;
+}
+
+function UpdateNotice({ state, onDownload, onDismiss }: { state: AppUpdateState; onDownload: () => void; onDismiss: () => void }): ReactElement {
+  return <section className="update-notice" aria-label="Tawny update available" role="status">
+    <span className="update-mark"><Download size={17} aria-hidden="true" /></span>
+    <div className="update-copy"><span className="eyebrow">EARLY PREVIEW · VERSION {state.version}</span>
+      <strong>{state.status === 'downloading' ? 'Downloading update' : state.status === 'downloaded' ? 'Ready to restart and install' : state.status === 'installing' ? 'Installing update' : 'Tawny Orch has an update'}</strong>
+      <p>{state.status === 'downloading' ? `${Math.round(state.percent ?? 0)}% downloaded · ${state.message ?? ''}` : state.status === 'downloaded' ? 'Your current work is safe. Restart Tawny to finish the update.' : state.status === 'installing' ? 'Tawny is closing cleanly and will reopen when the installer finishes.' : 'Download the verified Windows update now. Tawny will restart only when you choose Install.'}</p>
+    </div>
+    <div className="row-flex update-actions">{state.status === 'available' ? <button className="btn primary small" onClick={onDownload}><Download size={13} />Download</button> : null}
+      {state.status === 'downloading' ? <progress max={100} value={state.percent ?? 0} aria-label="Update download progress" /> : null}
+      <button className="icon-btn" aria-label="Dismiss update notice" onClick={onDismiss}><X size={16} /></button></div>
+  </section>;
 }
 
 function HandoffRail({ stages, run }: { stages: StageSpec[]; run?: RunSnapshot }): ReactElement {
@@ -536,19 +652,28 @@ function EmptyState({ title, description, action }: { title: string; description
   return <div className="card empty-state"><span className="empty-icon"><Workflow size={25} /></span><h2>{title}</h2><p>{description}</p>{action}</div>;
 }
 
-function RunsPage({ runs, events, logs, openRunId, setOpenRunId, agents, loaded, onStart, refreshing }: {
-  runs: RunSnapshot[]; events: OrchEvent[]; logs: PipelineLog[]; openRunId: string | undefined; setOpenRunId: (id: string | undefined) => void;
+function RunsPage({ runs, project, events, logs, openRunId, setOpenRunId, agents, loaded, onStart, refreshing }: {
+  runs: RunSnapshot[]; project: ProjectAttachment | null; events: OrchEvent[]; logs: PipelineLog[]; openRunId: string | undefined; setOpenRunId: (id: string | undefined) => void;
   agents: AgentStatus[]; loaded: boolean; onStart: () => void; refreshing: boolean;
 }): ReactElement {
+  const workspaceRuns = project ? runs.filter((run) => normalizeWorkspacePath(run.projectPath) === normalizeWorkspacePath(project.path)) : [];
   return <>
-    <PageHeading eyebrow="THE RECORD OF THE WORK" title="Runs & evidence.">Inspect actual stage outcomes, checks and handoffs. A finished run is not, by itself, proof of correctness.</PageHeading>
+    <PageHeading eyebrow="THE RECORD OF THE WORK" title="Runs & evidence.">{project ? <>Showing runs for <strong>{project.name}</strong>. Checks and handoffs are scoped to this workspace.</> : 'Choose a workspace in Cockpit to see its runs, checks and handoffs.'}</PageHeading>
     {refreshing ? <p className="helper" role="status">Refreshing run history…</p> : null}
-    {!runs.length ? <EmptyState title={loaded ? 'No recorded runs yet.' : 'Loading recorded runs…'} description="Start with a goal in Cockpit. Routing, checks and failures will appear here as they are reported."
-      action={<button className="btn primary" onClick={onStart}>Write a goal <ArrowRight size={15} /></button>} />
-      : <div className="run-list">{runs.map((run) => <RunRow key={run.id} run={run} open={openRunId === run.id}
+    {!project ? <EmptyState title="Select a workspace first." description="Run history is filtered to the folder attached in Cockpit, so you can review only the work for that project."
+      action={<button className="btn primary" onClick={onStart}>Open Cockpit <ArrowRight size={15} /></button>} />
+      : !workspaceRuns.length ? <EmptyState title={loaded ? 'No runs for this workspace yet.' : 'Loading recorded runs…'} description="Start a goal in Cockpit. Its stage outcomes, checks and handoffs will appear here."
+        action={<button className="btn primary" onClick={onStart}>Write a goal <ArrowRight size={15} /></button>} />
+      : <div className="run-list">{workspaceRuns.map((run) => <RunRow key={run.id} run={run} open={openRunId === run.id}
         onToggle={() => setOpenRunId(openRunId === run.id ? undefined : run.id)} agents={agents} logs={logs.filter((entry) => entry.runId === run.id).slice(-200)}
         events={events.filter((event) => event.runId === run.id).slice(-60)} />)}</div>}
   </>;
+}
+
+function normalizeWorkspacePath(path: string): string {
+  const normalized = path.replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+  // Windows drive and UNC paths are case-insensitive; keep POSIX paths case-sensitive.
+  return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLocaleLowerCase() : normalized;
 }
 
 function RunRow({ run, open, onToggle, agents, logs, events }: {
@@ -578,7 +703,7 @@ function RunRow({ run, open, onToggle, agents, logs, events }: {
     <div id={`run-${run.id}`} hidden={!open} className="run-detail">
       <div className="run-facts"><code>{run.projectPath}</code><span className="utility">{run.stages.some((stage) => stage.artifacts.some((artifact) => artifact.name === 'selected_workspace')) ? 'Selected folder · changes apply here' : 'Run'} · {run.id}</span></div>
       <HandoffRail stages={[]} run={run} />
-      <div className="stage-track">{run.stages.map((stage) => <section className="stage-line" key={stage.spec.id} aria-labelledby={`title-${run.id}-${stage.spec.id}`}>
+      <div className="stage-track">{run.stages.map((stage, stageIndex) => <section className="stage-line" key={stage.spec.id} aria-labelledby={`title-${run.id}-${stage.spec.id}`}>
         <div className="section-top"><div><h3 id={`title-${run.id}-${stage.spec.id}`}>{stage.spec.title}</h3><span className="utility">{stage.agentId ?? stage.spec.agentId ?? 'Router selects'} · attempt {stage.attempt}</span></div>
           <span className={`chip ${STATUS_CHIP[stage.status].cls}`}>{STATUS_CHIP[stage.status].label}</span></div>
         <div className="stage-controls">
@@ -591,9 +716,32 @@ function RunRow({ run, open, onToggle, agents, logs, events }: {
           {stage.artifacts.some((artifact) => artifact.name === 'selected_workspace') ? <button className="btn small subtle" disabled={pending !== null}
             onClick={() => { void perform('Open selected project folder', async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: 'selected_workspace' })); }}>
             <FolderOpen size={13} />Open selected project folder</button> : null}
+          {stage.artifacts.some((artifact) => artifact.name === 'agent_session') ? <button className="btn small subtle" disabled={pending !== null}
+            onClick={() => { void perform('Open session log', async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: 'agent_session' })); }}>
+            <ExternalLink size={13} />Open session log</button> : null}
+          {stage.artifacts.some((artifact) => artifact.name === 'agent_session_id') && ['codex', 'opencode', 'gemini-cli', 'claude-code'].includes(stage.agentId ?? '') ? <button className="btn small subtle" disabled={pending !== null || ['running', 'queued', 'routed', 'retrying'].includes(stage.status)}
+            title={['running', 'queued', 'routed', 'retrying'].includes(stage.status) ? 'This agent is still running; open its live output below.' : 'Open this provider conversation in a new terminal'}
+            onClick={() => { void perform('Open agent session', async () => window.tawnyOrch.openAgentSession({ runId: run.id, stageId: stage.spec.id })); }}>
+            <Terminal size={13} />Resume agent session</button> : null}
           {!['passed', 'skipped', 'cancelled', 'failed'].includes(stage.status) ? <button className="btn small subtle" disabled={pending !== null}
             onClick={() => escalate(stage.spec.id, 'skip')}>Skip stage</button> : null}
         </div>
+        {(() => {
+          const handoffs = run.stages.slice(0, stageIndex).filter((prior) => prior.artifacts.some((artifact) => artifact.name === 'verified_packet_md'));
+          if (!handoffs.length) return null;
+          return <details className="handoff-inbox">
+            <summary><Workflow size={14} />Incoming handoffs <span className="chip blue">{handoffs.length} verified packet{handoffs.length === 1 ? '' : 's'}</span><ChevronDown size={14} /></summary>
+            <div className="handoff-inbox-content"><p className="helper">These earlier stage packets are embedded in this agent's task contract. Open the contract below to inspect the complete dispatched brief.</p>
+              {handoffs.map((prior) => {
+                const packet = prior.artifacts.find((artifact) => artifact.name === 'verified_packet_md');
+                return <div className="handoff-packet-row" key={prior.spec.id}><span><strong>{prior.spec.title}</strong><small>{prior.agentId ?? prior.spec.agentId ?? 'Agent'} · {STATUS_CHIP[prior.status].label}</small>
+                  {prior.summary ? <span className="handoff-preview">{prior.summary}</span> : null}</span>
+                  {packet ? <button className="btn small subtle" disabled={pending !== null} onClick={() => void perform('Open handoff packet', async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: prior.spec.id, name: 'verified_packet_md' }))}><ExternalLink size={12} />Open packet</button> : null}
+                </div>;
+              })}
+            </div>
+          </details>;
+        })()}
         {stage.artifacts.some((artifact) => artifact.name === 'agent_session') ? (() => {
           const sessionEvents = logs.filter((entry) => entry.data?.stageId === stage.spec.id && entry.data?.attempt === String(stage.attempt) && entry.event.startsWith('agent.session.'));
           const started = [...sessionEvents].reverse().find((entry) => entry.event === 'agent.session.started');
@@ -610,10 +758,6 @@ function RunRow({ run, open, onToggle, agents, logs, events }: {
               {started?.data?.pid ? <code>PID {started.data.pid}</code> : null}</summary>
             <div className="session-content">
               <div className="session-meta"><span>{started?.data?.cwd ?? run.projectPath}</span>
-                {stage.artifacts.some((artifact) => artifact.name === 'agent_session_id') && ['codex', 'opencode', 'gemini-cli', 'claude-code'].includes(stage.agentId ?? '') ? <button className="btn small subtle" disabled={pending !== null || live} onClick={(event) => {
-                  event.preventDefault();
-                  void perform('Resume agent session in terminal', async () => window.tawnyOrch.openAgentSession({ runId: run.id, stageId: stage.spec.id }));
-                }}><Terminal size={12} />Resume agent session</button> : null}
                 <button className="btn small subtle" disabled={pending !== null} onClick={(event) => {
                   event.preventDefault();
                   void perform('Open session log', async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: 'agent_session' }));
@@ -624,26 +768,27 @@ function RunRow({ run, open, onToggle, agents, logs, events }: {
                     <time>{new Date(entry.timestamp).toLocaleTimeString()}</time><span>{entry.data?.stream ?? 'stdout'}›</span><code>{entry.message}</code>
                   </div>)}
                 </div>}
-              <p className="helper">Output is captured while the CLI runs. After exit, Resume agent session opens the provider’s saved conversation in a new terminal when that provider exposes a resumable session ID.</p>
+              <p className="helper">Output is captured while the CLI runs. Once the provider returns a resumable session ID, use Open agent session above to continue the saved conversation in a new terminal.</p>
             </div>
           </details>;
         })() : null}
         {stage.summary ? <div className="reported-summary"><span className="field-label">Reported summary</span><p>{stage.summary}</p></div> : null}
         {stage.failureReason ? <p className="reason">{stage.failureReason}</p> : null}
-        <div className="evidence-block"><h4><ShieldCheck size={14} />Recorded checks</h4>
-          {!stage.gates.length ? <p className="helper">No gate results recorded for this stage.</p> : <ul className="gate-list">{stage.gates.map((gate, index) => <li key={`${gate.gate}-${index}`}>
+        <div className="evidence-block">
+          <details className="evidence-details"><summary><ShieldCheck size={14} />Recorded checks <span className={`chip ${stage.gates.length && stage.gates.every((gate) => gate.result === 'pass') ? 'green' : stage.gates.some((gate) => gate.result !== 'pass') ? 'amber' : 'slate'}`}>{stage.gates.length ? `${stage.gates.filter((gate) => gate.result === 'pass').length}/${stage.gates.length} pass` : 'none'}</span><ChevronDown size={14} /></summary>
+          {!stage.gates.length ? <p className="helper compact-empty">No gate results recorded for this stage.</p> : <ul className="gate-list">{stage.gates.map((gate, index) => <li key={`${gate.gate}-${index}`}>
             <span className={`chip ${gate.result === 'pass' ? 'green' : 'red'}`}>{gate.result === 'pass' ? 'Pass' : gate.result === 'fail' ? 'Fail' : 'Error'}</span>
             <div><strong>{gate.gate}</strong><p>{gate.reason || 'No reason reported.'}</p></div>
-          </li>)}</ul>}
-          <h4>Artifact paths</h4>
+          </li>)}</ul>}</details>
+          <details className="evidence-details"><summary><FolderOpen size={14} />Artifact paths <span className="chip slate">{stage.artifacts.filter((artifact) => !artifact.name.startsWith('prior_attempt:')).length}</span><ChevronDown size={14} /></summary>
           {stage.artifacts.some((artifact) => !artifact.name.startsWith('prior_attempt:')) ? <ul className="artifact-list">{stage.artifacts.filter((artifact) => !artifact.name.startsWith('prior_attempt:')).map((artifact, index) => <li key={`${artifact.path}-${index}`}>
             <div className="section-top"><strong>{artifact.name}</strong>
-              {['task_contract', 'agent_session', 'agent_result', 'published_output'].includes(artifact.name) ? <button className="btn small subtle" disabled={pending !== null}
-                onClick={() => { void perform(`Open ${artifact.name}`, async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: artifact.name as 'task_contract' | 'agent_session' | 'agent_result' | 'published_output' })); }}>
+              {['task_contract', 'agent_session', 'agent_result', 'published_output', 'verified_packet_md'].includes(artifact.name) ? <button className="btn small subtle" disabled={pending !== null}
+                onClick={() => { void perform(`Open ${artifact.name}`, async () => window.tawnyOrch.openRunArtifact({ runId: run.id, stageId: stage.spec.id, name: artifact.name as 'task_contract' | 'agent_session' | 'agent_result' | 'published_output' | 'verified_packet_md' })); }}>
                 <ExternalLink size={12} />Open</button> : null}</div><code tabIndex={0} aria-label={`${artifact.name} path`}>{artifact.path}</code></li>)}</ul>
             : <p className="helper">No artifact paths reported. Packet and report paths appear here when supplied by the engine.</p>}
           {stage.artifacts.some((artifact) => artifact.name.startsWith('prior_attempt:')) ? <p className="helper">Previous attempt details are preserved in the run report. Use Open report at the top of this run.</p> : null}
-          <p className="helper">Task contracts and agent session logs can be opened from this run. Artifact paths are references; a path alone does not verify its contents.</p>
+          <p className="helper">Paths are references. Open an artifact to inspect its contents; a path alone is not proof that a check passed.</p></details>
         </div>
         {stage.status === 'escalated' ? <fieldset className="escalation-box" disabled={pending !== null}><legend>Resolve this handoff</legend>
           <label className="field-label" htmlFor={`reassign-${run.id}-${stage.spec.id}`}>Retry with a detected terminal</label>
@@ -674,11 +819,13 @@ function EventLog({ events, label }: { events: OrchEvent[]; label: string }): Re
   </div>;
 }
 
-function SettingsPage({ settings, setSettings, logs }: {
+function SettingsPage({ settings, setSettings, logs, updateState, setUpdateState }: {
   settings: AppSettings | null; setSettings: (settings: AppSettings) => void; logs: PipelineLog[];
+  updateState: AppUpdateState; setUpdateState: (state: AppUpdateState) => void;
 }): ReactElement {
   const [draft, setDraft] = useState<AppSettings | null>(settings);
   const [saved, setSaved] = useState(false);
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState('');
   const [pending, perform] = useOperation();
   useEffect(() => { setDraft(settings); }, [settings]);
   function save(): void {
@@ -691,6 +838,28 @@ function SettingsPage({ settings, setSettings, logs }: {
   }
   return <>
     <PageHeading eyebrow="LOCAL CONTROL, CLEAR BOUNDARIES" title="Make it work for you.">Keep your own tools and accounts. Understand what stays here and what leaves this device.</PageHeading>
+    <section className="card update-settings" aria-labelledby="updates-heading">
+      <div className="section-top"><div><span className="eyebrow">RELEASES</span><h2 id="updates-heading">Tawny updates</h2></div>
+        <button className="btn" disabled={pending !== null || updateState.status === 'checking'}
+          onClick={() => void perform('Check for updates', async () => setUpdateState(await window.tawnyOrch.checkForUpdates()))}>
+          <RefreshCw size={14} className={updateState.status === 'checking' ? 'spin' : ''} />{updateState.status === 'checking' ? 'Checking…' : 'Check now'}
+        </button></div>
+      <p className="card-sub">Tawny checks the public GitHub Releases page when the installed app starts, then about once a day. No project files, prompts, or usage data are sent for this check.</p>
+      <p className="update-status" role="status">{updateState.status === 'checking' ? 'Checking for a newer preview…'
+        : updateState.status === 'available' ? `Version ${updateState.version} is ready to download.`
+        : updateState.status === 'downloading' ? `Downloading version ${updateState.version} · ${Math.round(updateState.percent ?? 0)}%`
+          : updateState.status === 'downloaded' ? `Version ${updateState.version} is downloaded. Tawny will restart after active agent runs finish.`
+            : updateState.status === 'installing' ? 'Closing Tawny safely and restarting into the updated version…'
+              : updateState.status === 'error' ? updateState.message
+                : updateState.status === 'current' ? `You are up to date${updateState.currentVersion ? ` · ${updateState.currentVersion}` : ''}.`
+                  : `Installed version ${updateState.currentVersion || 'not detected'}.`}</p>
+      {updateState.checkedAt ? <p className="helper update-checked">Last checked {new Date(updateState.checkedAt).toLocaleString()}</p> : null}
+      {updateState.status === 'downloading' ? <progress className="settings-update-progress" max={100} value={updateState.percent ?? 0} aria-label="Update download progress" /> : null}
+      {updateState.status === 'available' ? <button className="btn primary small" onClick={() => void perform('Download update', async () => window.tawnyOrch.downloadUpdate())}><Download size={13} />Download & update Tawny</button> : null}
+      {updateState.status === 'error' ? <button className="text-btn" onClick={() => void perform('Open update release', async () => window.tawnyOrch.openUpdateRelease())}>
+        <ExternalLink size={14} />Open official release page</button> : null}
+      <div className="info-note">Tawny currently publishes Windows early previews only. Installers are unsigned, so Windows may show an unknown-publisher or SmartScreen warning. Update packages are downloaded from the official GitHub release and hash checked before installation.</div>
+    </section>
     {!draft ? <div className="card" role="status">Settings have not loaded. If loading failed, reopen the app before making changes; existing settings will not be overwritten.</div> : <>
       <form className="settings-form" onSubmit={(event) => { event.preventDefault(); save(); }}>
       <section className="card" aria-labelledby="voice-settings"><h2 id="voice-settings">Voice & transcription</h2>
@@ -715,7 +884,8 @@ function SettingsPage({ settings, setSettings, logs }: {
         <p>Typed goals do not need a transcription key. Local artifact paths and event records are evidence references—not a guarantee that checks passed.</p></div></section>
     </>}
     <section className="card" aria-labelledby="diagnostics-title"><div className="section-top"><div><span className="eyebrow">DIAGNOSTICS</span><h2 id="diagnostics-title">Recent activity</h2></div><span className="utility">Latest {Math.min(logs.length, 100)} entries</span></div>
-      <p className="card-sub">Review locally recorded messages when something fails. Check log content before sharing it.</p>
+      <p className="card-sub">Review locally recorded messages when something fails. Export a small support summary to share app health without exposing email, project paths, prompts, raw logs, or account tokens.</p>
+      <div className="row-flex"><button className="btn small" onClick={() => void window.tawnyOrch.exportDiagnostics().then((saved) => setDiagnosticsStatus(saved ? 'Saved on this device. Nothing was uploaded.' : 'Export cancelled.'))}><Download size={14} />Export diagnostic summary</button><span className="helper" role="status">{diagnosticsStatus}</span></div>
       <div className="log-stream" role="region" aria-label="Diagnostic logs" tabIndex={0}>
         {!logs.length ? <p className="helper">No log entries received.</p> : logs.slice(-100).map((entry, index) => <div className={`line ${entry.level}`} key={`${entry.timestamp}-${index}`}>
           <time>{new Date(entry.timestamp).toLocaleTimeString()}</time> {entry.event}: {entry.message}
@@ -741,10 +911,15 @@ function VoicePill({ snapshot, hotkey }: { snapshot: OverlaySnapshot; hotkey: st
   const { failure } = useContext(Feedback);
   const state = snapshot.state;
   const mainLine = failure ? `${failure.title} ${failure.detail}` : snapshot.message ?? snapshot.transcript ?? pillIdleLine(state);
-  return <div className="pill-page"><div className="tawny-pill">
-    <span className={`mic-orb ${failure ? 'failed' : state}`}>{state === 'done' ? <Check size={17} /> : state === 'failed' || failure ? <X size={17} /> : <Mic size={17} />}</span>
-    <div className="pill-status" role="status"><div className="pill-text" title={mainLine}>{mainLine}
-      <span className="sub">{state === 'confirming' ? 'Confirm to dispatch · Esc to cancel' : state === 'recording' ? `${hotkey} or stop · auto-stop 120s · 25 MB max` : hotkey}</span></div></div>
+  return <div className="pill-page"><div className={`tawny-pill pill-state-${failure ? 'failed' : state}`}>
+    <div className="pill-brand"><span className="pill-logo-badge"><img src="./tawny-orch-mark.svg" alt="" /></span>
+      <span className="pill-brand-name">Tawny Orch<small>VOICE CONTROL</small></span></div>
+    <span className="pill-divider" aria-hidden="true" />
+    <span className={`mic-orb ${failure ? 'failed' : state}`}>{state === 'done' ? <Check size={16} /> : state === 'failed' || failure ? <X size={16} /> : <Mic size={16} />}</span>
+    <div className="pill-status" role="status" aria-live="polite"><div className="pill-text" title={mainLine}>{mainLine}
+      <span className="sub">{state === 'confirming' ? 'Confirm to dispatch · Esc to cancel' : state === 'recording' ? `${hotkey} or stop · auto-stop 120s` : hotkey}</span></div></div>
+    <span className="pill-signal" aria-hidden="true"><i /><i /><i /></span>
+    <span className="pill-divider trailing" aria-hidden="true" />
     <div className="pill-actions">
       {state === 'recording' ? <button className="action-btn accent" aria-label="Finish capture" onClick={() => window.tawnyOrch.send('STOP')}><Square size={14} /></button> : null}
       {state === 'confirming' ? <button className="action-btn accent" aria-label="Confirm and dispatch voice action" onClick={() => window.tawnyOrch.send('CONFIRM')}><ArrowRight size={17} /></button> : null}

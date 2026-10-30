@@ -356,6 +356,36 @@ export const appSettingsSchema = z.object({
 });
 export type AppSettings = z.infer<typeof appSettingsSchema>;
 
+export const appUpdateStateSchema = z.object({
+  status: z.enum(['idle', 'checking', 'current', 'available', 'downloading', 'downloaded', 'installing', 'error']).default('idle'),
+  currentVersion: z.string().default(''),
+  version: z.string().default(''),
+  releaseUrl: z.string().url().optional(),
+  releaseNotes: z.string().default(''),
+  percent: z.number().min(0).max(100).optional(),
+  bytesPerSecond: z.number().nonnegative().optional(),
+  publishedAt: z.string().optional(),
+  checkedAt: z.string().optional(),
+  message: z.string().optional()
+});
+export type AppUpdateState = z.infer<typeof appUpdateStateSchema>;
+
+export const authUserSchema = z.object({
+  uid: z.string().min(1),
+  email: z.string().email(),
+  displayName: z.string().default('Google user'),
+  photoUrl: z.string().url().optional()
+});
+export type AuthUser = z.infer<typeof authUserSchema>;
+
+export const authStateSchema = z.object({
+  status: z.enum(['checking', 'unconfigured', 'signed_out', 'signing_in', 'authenticated', 'offline', 'error']),
+  user: authUserSchema.optional(),
+  persistentSession: z.boolean().default(false),
+  message: z.string().optional()
+});
+export type AuthState = z.infer<typeof authStateSchema>;
+
 export const providerSettingsSchema = appSettingsSchema;
 
 export const settingsUpdateSchema = z.object({

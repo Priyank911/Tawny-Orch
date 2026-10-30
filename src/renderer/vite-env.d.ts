@@ -1,11 +1,19 @@
 import type {
-  AgentStatus, AppSettings, OrchEvent, OverlaySnapshot,
+  AgentStatus, AppSettings, AppUpdateState, AuthState, OrchEvent, OverlaySnapshot,
   PipelineLog, PipelineTemplate, ProjectAttachment, ProjectConfig, RunSnapshot, StageSpec, VoiceDecision
 } from '../shared/contracts';
 
 declare global {
   interface Window {
     tawnyOrch: {
+      getAuthState: () => Promise<AuthState>;
+      signInWithGoogle: () => Promise<AuthState>;
+      cancelGoogleSignIn: () => Promise<AuthState>;
+      retryAuth: () => Promise<AuthState>;
+      signOut: () => Promise<AuthState>;
+      exportDiagnostics: () => Promise<boolean>;
+      onAuthState: (listener: (state: AuthState) => void) => () => void;
+
       getSnapshot: () => Promise<OverlaySnapshot>;
       subscribe: (listener: (snapshot: OverlaySnapshot) => void) => () => void;
       send: (event: 'HOTKEY' | 'STOP' | 'CANCEL' | 'CONFIRM') => void;
@@ -25,7 +33,7 @@ declare global {
       getRuns: () => Promise<RunSnapshot[]>;
       getRun: (runId: string) => Promise<RunSnapshot | null>;
       cancelRun: (runId: string) => Promise<void>;
-      openRunArtifact: (input: { runId: string; stageId?: string; name: 'task_contract' | 'agent_session' | 'agent_result' | 'final_report' | 'worktree' | 'selected_workspace' | 'published_output' }) => Promise<void>;
+      openRunArtifact: (input: { runId: string; stageId?: string; name: 'task_contract' | 'agent_session' | 'agent_result' | 'final_report' | 'worktree' | 'selected_workspace' | 'published_output' | 'verified_packet_md' }) => Promise<void>;
       openAgentSession: (input: { runId: string; stageId: string }) => Promise<void>;
       escalateStage: (input: {
         runId: string; stageId: string;
@@ -39,6 +47,12 @@ declare global {
 
       getSettings: () => Promise<AppSettings>;
       saveSettings: (settings: AppSettings) => Promise<void>;
+      getUpdateState: () => Promise<AppUpdateState>;
+      checkForUpdates: () => Promise<AppUpdateState>;
+      downloadUpdate: () => Promise<void>;
+      installUpdate: () => Promise<void>;
+      openUpdateRelease: () => Promise<void>;
+      onUpdateState: (listener: (state: AppUpdateState) => void) => () => void;
 
       enterBackground: () => Promise<void>;
       hideWindow: () => void;

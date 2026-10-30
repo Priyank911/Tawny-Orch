@@ -1,9 +1,17 @@
 import { resolve } from 'node:path';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
+import { loadEnv } from 'vite';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), 'TAWNY_');
+  return {
   main: {
+    define: {
+      __TAWNY_FIREBASE_API_KEY__: JSON.stringify(env.TAWNY_FIREBASE_API_KEY ?? ''),
+      __TAWNY_GOOGLE_CLIENT_ID__: JSON.stringify(env.TAWNY_GOOGLE_CLIENT_ID ?? ''),
+      __TAWNY_GOOGLE_CLIENT_SECRET__: JSON.stringify(env.TAWNY_GOOGLE_CLIENT_SECRET ?? '')
+    },
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
@@ -22,4 +30,5 @@ export default defineConfig({
     build: { rollupOptions: { input: resolve('src/renderer/index.html') } },
     plugins: [react()]
   }
+  };
 });

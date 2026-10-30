@@ -2,17 +2,21 @@
   "name": "tawny-orchestration",
   "version": "0.1.0",
   "private": true,
-  "description": "Tawny Orch - a keyboard-first Windows orchestration harness for coding agent terminals.",
+  "description": "Tawny Orch - a local-first desktop orchestration workspace for coding agent terminals.",
+  "author": "Tawny Orch",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "package:win": "pnpm build && electron-builder --config electron-builder.yml --win nsis --x64 --publish never",
+    "package:mac": "pnpm build && electron-builder --mac dmg --universal",
+    "package:linux": "pnpm build && electron-builder --linux AppImage deb --x64",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=2",
     "preview": "electron-vite preview"
   },
   "dependencies": {
-    "electron": "38.2.0",
+    "electron-updater": "^6.8.11",
     "lucide-react": "0.468.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",
@@ -24,12 +28,17 @@
     "@types/react": "19.1.13",
     "@types/react-dom": "19.1.9",
     "@vitejs/plugin-react": "5.0.4",
+    "electron": "38.2.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "4.0.1",
     "typescript": "5.9.2",
     "vite": "7.1.7",
     "vitest": "3.2.4"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
   }
 }

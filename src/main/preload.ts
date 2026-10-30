@@ -1,10 +1,23 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
-  AgentStatus, AppSettings, OrchEvent, OverlaySnapshot,
+  AgentStatus, AppSettings, AppUpdateState, AuthState, OrchEvent, OverlaySnapshot,
   PipelineLog, PipelineTemplate, ProjectAttachment, ProjectConfig, RunSnapshot, StageSpec
 } from '../shared/contracts';
 
 contextBridge.exposeInMainWorld('tawnyOrch', {
+  // Account and privacy diagnostics
+  getAuthState: (): Promise<AuthState> => ipcRenderer.invoke('auth:get-state'),
+  signInWithGoogle: (): Promise<AuthState> => ipcRenderer.invoke('auth:sign-in'),
+  cancelGoogleSignIn: (): Promise<AuthState> => ipcRenderer.invoke('auth:cancel'),
+  retryAuth: (): Promise<AuthState> => ipcRenderer.invoke('auth:retry'),
+  signOut: (): Promise<AuthState> => ipcRenderer.invoke('auth:sign-out'),
+  exportDiagnostics: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:export'),
+  onAuthState: (listener: (state: AuthState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: AuthState) => listener(state);
+    ipcRenderer.on('auth:state', handler);
+    return () => ipcRenderer.removeListener('auth:state', handler);
+  },
+
   // Voice pipeline surface (Tawny parity)
   getSnapshot: (): Promise<OverlaySnapshot> => ipcRenderer.invoke('overlay:get-snapshot'),
   subscribe: (listener: (snapshot: OverlaySnapshot) => void) => {
@@ -36,7 +49,7 @@ contextBridge.exposeInMainWorld('tawnyOrch', {
   getRuns: (): Promise<RunSnapshot[]> => ipcRenderer.invoke('runs:list'),
   getRun: (runId: string): Promise<RunSnapshot | null> => ipcRenderer.invoke('run:get', runId),
   cancelRun: (runId: string): Promise<void> => ipcRenderer.invoke('run:cancel', runId),
-  openRunArtifact: (input: { runId: string; stageId?: string; name: 'task_contract' | 'agent_session' | 'agent_result' | 'final_report' | 'worktree' | 'selected_workspace' | 'published_output' }): Promise<void> =>
+  openRunArtifact: (input: { runId: string; stageId?: string; name: 'task_contract' | 'agent_session' | 'agent_result' | 'final_report' | 'worktree' | 'selected_workspace' | 'published_output' | 'verified_packet_md' }): Promise<void> =>
     ipcRenderer.invoke('run:artifact:open', input),
   openAgentSession: (input: { runId: string; stageId: string }): Promise<void> => ipcRenderer.invoke('run:agent-session:open', input),
   escalateStage: (input: { runId: string; stageId: string; reassignAgentId?: string | null; manualComplete?: boolean; summary?: string; skip?: boolean }): Promise<void> =>
@@ -59,6 +72,16 @@ contextBridge.exposeInMainWorld('tawnyOrch', {
   // Settings
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings: AppSettings): Promise<void> => ipcRenderer.invoke('settings:save', settings),
+  getUpdateState: (): Promise<AppUpdateState> => ipcRenderer.invoke('updates:get-state'),
+  checkForUpdates: (): Promise<AppUpdateState> => ipcRenderer.invoke('updates:check'),
+  downloadUpdate: (): Promise<void> => ipcRenderer.invoke('updates:download'),
+  installUpdate: (): Promise<void> => ipcRenderer.invoke('updates:install'),
+  openUpdateRelease: (): Promise<void> => ipcRenderer.invoke('updates:open-release'),
+  onUpdateState: (listener: (state: AppUpdateState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: AppUpdateState) => listener(state);
+    ipcRenderer.on('updates:state', handler);
+    return () => ipcRenderer.removeListener('updates:state', handler);
+  },
 
   // Window / app control
   enterBackground: (): Promise<void> => ipcRenderer.invoke('app:enter-background'),

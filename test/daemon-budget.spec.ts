@@ -13,9 +13,10 @@ import { agentResultsSchema, agentStatusSchema, budgetConfigSchema, stageSpecSch
 vi.mock('../src/main/detect/agents', () => ({ cachedAgents: vi.fn(), detectAgents: vi.fn() }));
 vi.mock('../src/main/logger', () => ({ logPipeline: vi.fn() }));
 
-// Real engine/router/store behind the JSON-RPC client, with a controlled offline adapter.
-describe('daemon budget refresh between stage attempts', () => {
-  it.each(['revoke confirmation', 'remove entitlement'] as const)('%s affects the next stage, not the in-flight attempt', async (change) => {
+// Agent access and provider charges are configured in the agent CLI. Legacy
+// entitlement settings must not gate an explicitly selected installed agent.
+describe('daemon routing ignores legacy entitlement settings', () => {
+  it.each(['revoke confirmation', 'remove entitlement'] as const)('%s does not interrupt or block selected stages', async (change) => {
     const root = await mkdtemp(join(tmpdir(), 'tawny-daemon-budget-'));
     const project = join(root, 'project');
     await mkdir(project);
@@ -80,12 +81,13 @@ describe('daemon budget refresh between stage attempts', () => {
         result: agentResultsSchema.parse({ status: 'completed', summary: 'First planning attempt completed normally.' }),
         stdoutSummary: 'First planning attempt completed normally.', stderrTail: [], exitCode: 0, timedOut: false
       });
-      await vi.waitFor(async () => expect((await client.loadRunById(run.id))?.status).toBe('escalated'), { timeout: 10_000 });
+      await vi.waitFor(async () => expect((await client.loadRunById(run.id))?.status).toBe('done'), { timeout: 10_000 });
       const finished = await client.loadRunById(run.id);
       expect(finished?.stages[0].status, JSON.stringify({ run: finished, errors: errors.map((error) => error.message) })).toBe('passed');
-      expect(contexts.map((ctx) => ctx.contract.stageId)).toEqual(['first']);
+      expect(finished?.stages[1].status).toBe('passed');
+      expect(contexts.map((ctx) => ctx.contract.stageId)).toEqual(['first', 'second']);
       expect(adapter.cancel).not.toHaveBeenCalled();
-      await vi.waitFor(() => expect(errors.some((error) => error.message.includes('selected agent is unavailable'))).toBe(true));
+      expect(errors).toEqual([]);
     } finally {
       release({ result: null, stdoutSummary: '', stderrTail: [], exitCode: null, timedOut: false });
       try { await client.stop(); }

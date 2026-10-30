@@ -110,7 +110,7 @@ describe('offline mid-task failover with real git', () => {
     return (await readContinuation(path, hash))!;
   }
 
-  it('resumes staged and untracked partial work in the SAME worktree without committing; acceptance runs only after completion', async () => {
+  it('resumes staged and untracked partial work in the selected project without committing; acceptance runs only after completion', async () => {
     const base = git(project, ['rev-parse', 'HEAD']).trim();
     act = async (ctx) => {
       if (ctx.contract.agentId === 'free-a') {
@@ -144,7 +144,7 @@ describe('offline mid-task failover with real git', () => {
     expect(state.stages[0].attempt).toBe(2);
     expect(state.stages[0].spec.agentId).toBeNull();
     expect(exhaustedAgentIds(state)).toEqual(new Set(['free-a']));
-    expect(readFileSync(join(project, 'implementation.txt'), 'utf8')).toBe('base\n');
+    expect(readFileSync(join(project, 'implementation.txt'), 'utf8')).toBe('complete\n');
     const artifacts = state.stages[0].artifacts;
     for (const [name, hashName] of [['continuation', 'continuation_sha256'], ['continuation_md', 'continuation_md_sha256']]) {
       const body = readFileSync(artifacts.find((artifact) => artifact.name === name)!.path, 'utf8');

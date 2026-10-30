@@ -1,10 +1,11 @@
 import {
-  app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, screen, shell, Tray
+  app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray
 } from 'electron';
 import { isAbsolute, join, relative } from 'node:path';
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createActor } from 'xstate';
+import electronUpdater from 'electron-updater';
 import { overlayState, pipelineMachine } from './pipeline/machine';
 import { parseVoiceCommand } from './pipeline/voice';
 import { resolveVoiceProject } from './pipeline/projectResolver';
@@ -24,8 +25,17 @@ import {
   chooseProjectFolder, readAttachedProject, readProjectConfig, saveProjectConfig, resolveRegisteredProject, listRegisteredProjects
 } from './projectStore';
 import type {
-  AgentStatus, AppSettings, OrchEvent, OverlaySnapshot, PipelineLog, RunSnapshot, StageSpec
+  AgentStatus, AppSettings, AppUpdateState, OrchEvent, OverlaySnapshot, PipelineLog, RunSnapshot, StageSpec
 } from '../shared/contracts';
+import { checkForReleaseUpdate, RELEASES_URL } from './releaseUpdates';
+import { createFirebaseAuthService } from './firebaseAuth';
+import type { AuthState } from '../shared/contracts';
+
+declare const __TAWNY_FIREBASE_API_KEY__: string;
+declare const __TAWNY_GOOGLE_CLIENT_ID__: string;
+declare const __TAWNY_GOOGLE_CLIENT_SECRET__: string;
+
+const { autoUpdater } = electronUpdater;
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -39,8 +49,37 @@ let settings: AppSettings = {
   groqApiKey: '', cloudflareAccountId: '', cloudflareApiToken: '',
   prefs: { hotkey: 'Control+Alt+Space', alwaysRoute: false, wakePhrases: ['hey tawny', 'hey buddy'] }
 };
+let updateState: AppUpdateState = { status: 'idle', currentVersion: '', version: '', releaseNotes: '' };
+let updateCheck: Promise<AppUpdateState> | undefined;
+let notifiedUpdateVersion = '';
+let updaterConfigured = false;
+let updateInstallCheck: Promise<void> | undefined;
 let voiceGeneration = 0;
 let currentDecision: ReturnType<typeof parseVoiceCommand>['decision'] | undefined;
+let authState: AuthState = { status: 'checking', persistentSession: false };
+const auth = createFirebaseAuthService({
+  apiKey: __TAWNY_FIREBASE_API_KEY__,
+  googleClientId: __TAWNY_GOOGLE_CLIENT_ID__,
+  googleClientSecret: __TAWNY_GOOGLE_CLIENT_SECRET__,
+  userDataDir: app.getPath('userData'),
+  encryptionAvailable: () => safeStorage.isEncryptionAvailable() && safeStorage.getSelectedStorageBackend?.() !== 'basic_text',
+  encrypt: (value) => safeStorage.encryptString(value),
+  decrypt: (value) => safeStorage.decryptString(value),
+  openExternal: (url) => shell.openExternal(url),
+  onState: (state) => {
+    authState = state;
+    if (state.status === 'authenticated' && mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    try { mainWindow?.webContents.send('auth:state', state); } catch { /* Window may be closing. */ }
+  }
+});
+
+function requireAuthenticated(): void {
+  if (!auth.isAuthenticated()) throw new Error('Sign in with Google before using workspace features.');
+}
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -82,6 +121,7 @@ function updateSnapshotForRun(run: RunSnapshot): void {
   } catch {
     /* window gone */
   }
+  if (updateState.status === 'downloaded') scheduleWindowsUpdateInstall();
 }
 
 function stageOrOverallText(run: RunSnapshot): string {
@@ -98,6 +138,139 @@ function pushSnapshot(): void {
   } catch {
     /* window gone */
   }
+}
+
+function publishUpdateState(next: AppUpdateState): void {
+  updateState = next;
+  try { mainWindow?.webContents.send('updates:state', next); } catch { /* Window may be closing. */ }
+}
+
+async function notifyAboutUpdate(state: AppUpdateState): Promise<void> {
+  if (state.status !== 'available' || !state.version || !state.releaseUrl ||
+      (mainWindow?.isVisible() ?? false) || !Notification.isSupported()) return;
+  const notificationPath = join(userDataDir(), 'update-notified.json');
+  try {
+    const saved = JSON.parse(await readFile(notificationPath, 'utf8')) as { version?: unknown };
+    if (saved.version === state.version) return;
+  } catch { /* No prior notification record. */ }
+  const notification = new Notification({
+    title: `Tawny Orch ${state.version} is ready`,
+    body: 'Open the profile menu in Tawny and choose Download update.'
+  });
+  notification.on('click', () => showShell());
+  notification.show();
+  notifiedUpdateVersion = state.version;
+  try { await writeFile(notificationPath, JSON.stringify({ version: state.version }), 'utf8'); }
+  catch (error) { logPipeline({ event: 'updates.notification_record_failed', message: String(error), level: 'warn' }); }
+}
+
+function checkForUpdates(): Promise<AppUpdateState> {
+  if (updateCheck) return updateCheck;
+  const currentVersion = app.getVersion();
+  publishUpdateState({ status: 'checking', currentVersion, version: '', releaseNotes: '' });
+  if (process.platform === 'win32' && app.isPackaged) {
+    configureWindowsUpdater();
+    updateCheck = autoUpdater.checkForUpdates().then(async (result) => {
+      if (result && !result.isUpdateAvailable) {
+        publishUpdateState({ status: 'current', currentVersion, version: '', releaseNotes: '', checkedAt: new Date().toISOString() });
+      }
+      return updateState;
+    }).catch((error: unknown) => {
+      const message = `Could not check Windows updates: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+      publishUpdateState({ status: 'error', currentVersion, version: '', releaseNotes: '', checkedAt: new Date().toISOString(), message });
+      logPipeline({ event: 'updates.error', message, level: 'warn' });
+      return updateState;
+    }).finally(() => { updateCheck = undefined; });
+    return updateCheck;
+  }
+  updateCheck = checkForReleaseUpdate(currentVersion).then(async (state) => {
+    publishUpdateState(state);
+    if (state.status === 'available' && notifiedUpdateVersion !== state.version) await notifyAboutUpdate(state);
+    logPipeline({ event: `updates.${state.status}`, message: state.message ?? `Update check completed for ${currentVersion}.`,
+      level: state.status === 'error' ? 'warn' : 'info', data: { currentVersion, availableVersion: state.version } });
+    return state;
+  }).finally(() => { updateCheck = undefined; });
+  return updateCheck;
+}
+
+function configureWindowsUpdater(): void {
+  if (updaterConfigured || process.platform !== 'win32' || !app.isPackaged) return;
+  updaterConfigured = true;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.autoRunAppAfterInstall = true;
+  autoUpdater.allowPrerelease = true;
+  autoUpdater.allowDowngrade = false;
+  autoUpdater.on('checking-for-update', () => publishUpdateState({
+    status: 'checking', currentVersion: app.getVersion(), version: '', releaseNotes: ''
+  }));
+  autoUpdater.on('update-available', (info) => {
+    const releaseNotes = typeof info.releaseNotes === 'string' ? info.releaseNotes
+      : Array.isArray(info.releaseNotes) ? info.releaseNotes.map((item) => item.note).join('\n') : '';
+    const next: AppUpdateState = {
+      status: 'available', currentVersion: app.getVersion(), version: info.version,
+      releaseUrl: RELEASES_URL, releaseNotes: releaseNotes.slice(0, 12_000), checkedAt: new Date().toISOString(),
+      message: `Version ${info.version} is ready to download.`
+    };
+    publishUpdateState(next);
+    if (notifiedUpdateVersion !== info.version) void notifyAboutUpdate(next);
+    logPipeline({ event: 'updates.available', message: next.message!, data: { version: info.version } });
+  });
+  autoUpdater.on('update-not-available', () => publishUpdateState({
+    status: 'current', currentVersion: app.getVersion(), version: '', releaseNotes: '', checkedAt: new Date().toISOString()
+  }));
+  autoUpdater.on('download-progress', (progress) => publishUpdateState({
+    ...updateState, status: 'downloading', percent: Math.max(0, Math.min(100, progress.percent)),
+    bytesPerSecond: progress.bytesPerSecond, message: `Downloading update · ${Math.round(progress.percent)}%`
+  }));
+  autoUpdater.on('update-downloaded', (info) => {
+    publishUpdateState({ ...updateState, status: 'downloaded', version: info.version, percent: 100,
+      message: `Version ${info.version} is downloaded. Tawny will restart after active runs finish.` });
+    logPipeline({ event: 'updates.downloaded', message: `Version ${info.version} downloaded.` });
+    scheduleWindowsUpdateInstall();
+  });
+  autoUpdater.on('error', (error) => {
+    const message = `Windows update failed: ${error.message}`.slice(0, 300);
+    publishUpdateState({ ...updateState, status: 'error', checkedAt: new Date().toISOString(), message });
+    logPipeline({ event: 'updates.error', message, level: 'error' });
+  });
+}
+
+function downloadWindowsUpdate(): void {
+  if (process.platform !== 'win32' || !app.isPackaged) throw new Error('Automatic installation is available in the packaged Windows app.');
+  if (updateState.status !== 'available') throw new Error('Check for an available update before downloading it.');
+  configureWindowsUpdater();
+  publishUpdateState({ ...updateState, status: 'downloading', percent: 0, message: 'Starting secure update download…' });
+  void autoUpdater.downloadUpdate().catch((error: unknown) => {
+    const message = `Could not download update: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+    publishUpdateState({ ...updateState, status: 'error', message });
+    logPipeline({ event: 'updates.download_failed', message, level: 'error' });
+  });
+}
+
+async function installWindowsUpdate(): Promise<void> {
+  if (process.platform !== 'win32' || !app.isPackaged) throw new Error('Automatic installation is available in the packaged Windows app.');
+  if (updateState.status !== 'downloaded') throw new Error('The update must finish downloading before installation.');
+  const runs = await engine.listRuns();
+  const activeRun = runs.find((run) => ['pending', 'running'].includes(run.status) || run.stages.some((stage) => ['running', 'retrying'].includes(stage.status)));
+  if (activeRun) {
+    publishUpdateState({ ...updateState, message: `Version ${updateState.version} is downloaded. Tawny will restart after “${activeRun.goal.slice(0, 80)}” finishes.` });
+    return;
+  }
+  publishUpdateState({ ...updateState, status: 'installing', message: 'Closing Tawny safely, installing the update, and restarting…' });
+  await engine.stop();
+  daemonStopped = true;
+  quitting = true;
+  autoUpdater.quitAndInstall(false, true);
+}
+
+function scheduleWindowsUpdateInstall(): void {
+  if (updateInstallCheck || updateState.status !== 'downloaded') return;
+  updateInstallCheck = installWindowsUpdate().catch((error: unknown) => {
+    const message = `Could not install update: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+    publishUpdateState({ ...updateState, status: 'error', message });
+    logPipeline({ event: 'updates.install_failed', message, level: 'error' });
+  }).finally(() => { updateInstallCheck = undefined; });
 }
 
 setEventSink((event: OrchEvent) => {
@@ -210,6 +383,16 @@ function subscribeMachine(): void {
 }
 
 async function startVoiceJob(): Promise<void> {
+  if (updateState.status === 'installing') {
+    snapshot = { ...snapshot, state: 'failed', message: 'Tawny is updating and will reopen shortly.' };
+    pushSnapshot();
+    return;
+  }
+  if (!auth.isAuthenticated()) {
+    snapshot = { ...snapshot, state: 'failed', message: 'Sign in with Google before starting voice capture.' };
+    pushSnapshot();
+    return;
+  }
   voiceGeneration += 1;
   currentDecision = undefined;
   snapshot = { ...snapshot, state: 'arming', elapsedMs: 0, rms: 0, message: undefined, decision: undefined, transcript: undefined, runId: undefined, runStageIndex: undefined, runStageTotal: undefined, runStageTitle: undefined };
@@ -382,6 +565,18 @@ async function handleImmediateIntent(intent: 'stop_run' | 'pause_run' | 'resume_
 }
 
 async function dispatchConfirmed(): Promise<void> {
+  if (updateState.status === 'installing') {
+    currentDecision = undefined;
+    snapshot = { ...snapshot, state: 'failed', message: 'Tawny is updating and will reopen shortly.' };
+    pushSnapshot();
+    return;
+  }
+  if (!auth.isAuthenticated()) {
+    currentDecision = undefined;
+    snapshot = { ...snapshot, state: 'failed', message: 'Sign in with Google before dispatching a pipeline.' };
+    pushSnapshot();
+    return;
+  }
   const decision = currentDecision;
   if (snapshot.state !== 'confirming') return;
   if (!decision) {
@@ -461,9 +656,55 @@ async function dispatchConfirmed(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function registerIpc(): void {
+  ipcMain.handle('auth:get-state', () => authState);
+  ipcMain.handle('auth:sign-in', async () => auth.signIn());
+  ipcMain.handle('auth:cancel', async () => { await auth.cancelSignIn(); return auth.getState(); });
+  ipcMain.handle('auth:sign-out', async () => {
+    cancelVoiceJob();
+    return auth.signOut();
+  });
+  ipcMain.handle('auth:retry', async () => auth.initialize());
+  ipcMain.handle('diagnostics:export', async () => {
+    const saveOptions = {
+      title: 'Export Tawny diagnostic summary',
+      defaultPath: `tawny-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON report', extensions: ['json'] }]
+    };
+    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, saveOptions) : await dialog.showSaveDialog(saveOptions);
+    if (result.canceled || !result.filePath) return false;
+    const entries = getRecentLogs();
+    const counts = entries.reduce<Record<string, number>>((all, entry) => {
+      const key = `${entry.level}:${entry.event.split('.')[0] || 'other'}`;
+      all[key] = (all[key] ?? 0) + 1;
+      return all;
+    }, {});
+    const report = {
+      reportVersion: 1,
+      generatedAt: new Date().toISOString(),
+      app: { name: app.getName(), version: app.getVersion(), platform: process.platform, arch: process.arch },
+      auth: { status: authState.status, persistentSession: authState.persistentSession, secureStorageAvailable: auth.hasSecureStorage() },
+      updates: { status: updateState.status, version: updateState.version || undefined, checkedAt: updateState.checkedAt },
+      recentActivity: { includedEntries: Math.min(entries.length, 500), groupedCounts: counts }
+    };
+    await writeFile(result.filePath, JSON.stringify(report, null, 2), 'utf8');
+    return true;
+  });
   ipcMain.handle('overlay:get-snapshot', () => snapshot);
+  ipcMain.handle('updates:get-state', () => updateState);
+  ipcMain.handle('updates:check', () => checkForUpdates());
+  ipcMain.handle('updates:download', () => { downloadWindowsUpdate(); });
+  ipcMain.handle('updates:install', () => installWindowsUpdate());
+  ipcMain.handle('updates:open-release', async () => {
+    const destination = updateState.releaseUrl ?? RELEASES_URL;
+    const url = new URL(destination);
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com' || !url.pathname.startsWith('/Priyank911/Tawny-Orch/releases')) {
+      throw new Error('The update page did not match Tawny’s official GitHub Releases page.');
+    }
+    await shell.openExternal(url.toString());
+  });
 
   ipcMain.handle('audio:transcribe', async (_event, audio: Uint8Array | Uint8Array[]) => {
+    requireAuthenticated();
     const generation = voiceGeneration;
     try {
       const text = await transcribeFromRenderer(audio);
@@ -488,10 +729,11 @@ function registerIpc(): void {
     }
   });
 
-  ipcMain.handle('agents:get', (): Promise<AgentStatus[]> => detectAgents());
-  ipcMain.handle('agents:detect', async (): Promise<AgentStatus[]> => detectAgents(true));
+  ipcMain.handle('agents:get', (): Promise<AgentStatus[]> => { requireAuthenticated(); return detectAgents(); });
+  ipcMain.handle('agents:detect', async (): Promise<AgentStatus[]> => { requireAuthenticated(); return detectAgents(true); });
 
   ipcMain.handle('project:attach', async () => {
+    requireAuthenticated();
     const project = await chooseProjectFolder();
     logPipeline({
       event: 'project.attached',
@@ -501,20 +743,23 @@ function registerIpc(): void {
     if (project) mainWindow?.webContents.send('project:update', project);
     return project;
   });
-  ipcMain.handle('project:get', () => readAttachedProject());
+  ipcMain.handle('project:get', () => { requireAuthenticated(); return readAttachedProject(); });
   const approvedProject = async (projectPath: string): Promise<string> => {
     const attached = await readAttachedProject();
     if (!attached || attached.path !== projectPath) throw new Error('Attach this project using the folder picker first.');
     return attached.path;
   };
-  ipcMain.handle('project:config:get', async (_event, projectPath: string) => readProjectConfig(await approvedProject(projectPath)));
+  ipcMain.handle('project:config:get', async (_event, projectPath: string) => { requireAuthenticated(); return readProjectConfig(await approvedProject(projectPath)); });
   ipcMain.handle('project:config:save', async (_event, payload: { projectPath: string; config: { version: 1; templateId: string; stages: StageSpec[]; updatedAt?: string } }) => {
+    requireAuthenticated();
     await saveProjectConfig(await approvedProject(payload.projectPath), payload.config);
   });
 
   ipcMain.handle('templates:get', () => BASE_TEMPLATES);
 
   ipcMain.handle('run:create', async (_event, input: { goal: string; overwriteStages?: StageSpec[]; templateId?: string; projectPath?: string }) => {
+    requireAuthenticated();
+    if (updateState.status === 'installing') throw new Error('Tawny is installing an update and will reopen shortly.');
     const parsed = z.object({ goal: z.string().trim().min(1).max(12000), overwriteStages: z.array(stageSpecSchema).min(1).max(20).optional(), templateId: z.string().optional(), projectPath: z.string().optional() }).parse(input);
     input = parsed;
     const projectPath = input.projectPath
@@ -541,11 +786,12 @@ function registerIpc(): void {
     });
     return run;
   });
-  ipcMain.handle('runs:list', async () => engine.listRuns());
-  ipcMain.handle('run:get', async (_event, runId: string) => engine.loadRunById(runId));
-  ipcMain.handle('run:cancel', async (_event, runId: string) => { await engine.cancelRun(runId); });
+  ipcMain.handle('runs:list', async () => { requireAuthenticated(); return engine.listRuns(); });
+  ipcMain.handle('run:get', async (_event, runId: string) => { requireAuthenticated(); return engine.loadRunById(runId); });
+  ipcMain.handle('run:cancel', async (_event, runId: string) => { requireAuthenticated(); await engine.cancelRun(runId); });
   ipcMain.handle('run:artifact:open', async (_event, input: { runId: string; stageId?: string; name: string }) => {
-    if (!['task_contract', 'agent_session', 'agent_result', 'final_report', 'worktree', 'selected_workspace', 'published_output'].includes(input.name)) throw new Error('This artifact cannot be opened from the run view.');
+    requireAuthenticated();
+    if (!['task_contract', 'agent_session', 'agent_result', 'final_report', 'worktree', 'selected_workspace', 'published_output', 'verified_packet_md'].includes(input.name)) throw new Error('This artifact cannot be opened from the run view.');
     const run = await engine.loadRunById(input.runId);
     if (!run) throw new Error('This run no longer exists.');
     const artifact = input.name === 'final_report'
@@ -580,6 +826,7 @@ function registerIpc(): void {
     if (error) throw new Error(error);
   });
   ipcMain.handle('run:agent-session:open', async (_event, input: { runId: string; stageId: string }) => {
+    requireAuthenticated();
     const run = await engine.loadRunById(input.runId);
     const stage = run?.stages.find((candidate) => candidate.spec.id === input.stageId);
     if (!run || !stage || ['running', 'queued', 'routed', 'retrying'].includes(stage.status)) {
@@ -591,6 +838,7 @@ function registerIpc(): void {
     await openAgentTerminal(stage.agentId, sessionId, cwd);
   });
   ipcMain.handle('run:escalate', async (_event, input: { runId: string; stageId: string; agentId?: string | null; manualComplete?: boolean; summary?: string; skip?: boolean }) => {
+    requireAuthenticated();
     return engine.escalateStage({
       runId: input.runId,
       stageId: input.stageId,
@@ -602,16 +850,19 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('events:get', async (_event, runId?: string) => {
+    requireAuthenticated();
     const events = await readEventsFromDisk();
     return runId ? events.filter((event) => event.runId === runId) : events;
   });
-  ipcMain.handle('logs:get', () => getRecentLogs());
+  ipcMain.handle('logs:get', () => { requireAuthenticated(); return getRecentLogs(); });
 
   ipcMain.handle('settings:get', async () => {
+    requireAuthenticated();
     settings = await readSettings();
     return settings;
   });
   ipcMain.handle('settings:save', async (_event, next: AppSettings) => {
+    requireAuthenticated();
     const validated = appSettingsSchema.parse(next);
     await saveSettings(validated);
     settings = validated;
@@ -625,6 +876,7 @@ function registerIpc(): void {
   });
 
   ipcMain.on('pipeline:event', (_event, action: 'HOTKEY' | 'STOP' | 'CANCEL' | 'CONFIRM') => {
+    if (!auth.isAuthenticated() && action !== 'CANCEL') return;
     handlePipelineAction(action);
   });
   ipcMain.on('capture:log', (_event, input: { event: string; message: string; level?: 'debug' | 'info' | 'warn' | 'error'; data?: Record<string, string> }) => {
@@ -716,6 +968,12 @@ app.whenReady().then(async () => {
       /* window gone */
     }
   });
+  authState = await auth.initialize();
+  logPipeline({
+    event: 'auth.startup',
+    message: `Account gate initialized (${authState.status}; ${authState.persistentSession ? 'saved session' : 'no saved session'}).`,
+    level: authState.status === 'error' || authState.status === 'offline' ? 'warn' : 'info'
+  });
   settings = await readSettings();
   await engine.start();
   registerIpc();
@@ -723,6 +981,11 @@ app.whenReady().then(async () => {
   createTray();
   subscribeMachine();
   logPipeline({ event: 'app.boot', message: 'Tawny Orch ready.' });
+  if (app.isPackaged) {
+    configureWindowsUpdater();
+    void checkForUpdates();
+    setInterval(() => { void checkForUpdates(); }, 24 * 60 * 60 * 1000);
+  }
 
   const shortcut = settings.prefs?.hotkey ?? 'Control+Alt+Space';
   const registered = globalShortcut.register(shortcut, () => {
