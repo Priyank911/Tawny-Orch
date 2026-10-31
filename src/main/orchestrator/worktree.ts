@@ -49,7 +49,12 @@ export function ensureWorktree(projectPath: string, target: string, branch: stri
     mkdirSync(dirname(target), { recursive: true });
     git(projectPath, ['worktree', 'add', '-b', branch, target, base]);
   }
-  const canonical = (path: string): string => realpathSync(path).replace(/\\/g, '/');
+  const canonical = (path: string): string => {
+    const actual = realpathSync.native(path).replace(/\\/g, '/');
+    // Windows paths are case-insensitive and Git/Node may report different
+    // casing or short/long aliases for the same registered worktree.
+    return process.platform === 'win32' ? actual.toLowerCase() : actual;
+  };
   const registered = git(projectPath, ['worktree', 'list', '--porcelain', '-z']).split('\0')
     .filter((field) => field.startsWith('worktree ')).map((field) => field.slice(9));
   if (!registered.some((path) => canonical(path) === canonical(target)) ||
