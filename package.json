@@ -1,6 +1,6 @@
 {
   "name": "tawny-orchestration",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Tawny Orch - a local-first desktop orchestration workspace for coding agent terminals.",
   "author": "Tawny Orch",
