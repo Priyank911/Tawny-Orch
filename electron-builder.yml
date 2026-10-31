@@ -14,7 +14,7 @@ publish:
 asar: true
 artifactName: Tawny-Orch-${version}-${os}-${arch}.${ext}
 win:
-  icon: build/icon.ico
+  icon: build/icon.svg
   signExecutable: false
   target:
     - target: nsis
@@ -26,8 +26,6 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  installerIcon: build/icon.ico
-  uninstallerIcon: build/icon.ico
 mac:
   identity: null
   hardenedRuntime: false
