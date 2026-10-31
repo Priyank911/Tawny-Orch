@@ -30,7 +30,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/check-release-tag.mjs
       - name: Require Firebase sign-in configuration
-        run: node -e "const required = ['TAWNY_FIREBASE_API_KEY', 'TAWNY_GOOGLE_CLIENT_ID', 'TAWNY_GOOGLE_CLIENT_SECRET']; const missing = required.filter((name) => !process.env[name]); if (missing.length) { console.error('Missing GitHub Actions secrets: ' + missing.join(', ')); process.exit(1); }"
+        run: |
+          node -e "const required = ['TAWNY_FIREBASE_API_KEY', 'TAWNY_GOOGLE_CLIENT_ID', 'TAWNY_GOOGLE_CLIENT_SECRET']; const missing = required.filter((name) => !process.env[name]); if (missing.length) { console.error('Missing Firebase Actions secrets — ' + missing.join(', ')); process.exit(1); }"
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
