@@ -133,8 +133,9 @@ describe('engine.createRun validates before persistence', () => {
       throw error;
     }
     const run = await engine.createRun(input(alias));
-    expect(run.projectPath).toBe(realpathSync(project));
-    expect((await engine.loadRunById(run.id))?.projectPath).toBe(realpathSync(project));
+    const canonicalProject = realpathSync.native(project);
+    expect(run.projectPath).toBe(canonicalProject);
+    expect((await engine.loadRunById(run.id))?.projectPath).toBe(canonicalProject);
   });
 
   it('does not alter existing persisted runs when a later request is invalid', async () => {

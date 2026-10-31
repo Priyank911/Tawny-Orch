@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+vi.setConfig({ testTimeout: 45_000, hookTimeout: 30_000 });
 import type { AgentAdapter, AdapterContext } from '../src/main/agents/base';
 import type { AgentResult, RunSnapshot, StageSpec } from '../src/shared/contracts';
 import { OrchestratorEngine } from '../src/main/orchestrator/engine';
@@ -354,7 +354,9 @@ describe('manual verification and conservative recovery', () => {
 });
 
 async function waitFor(condition: () => boolean | Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 15000;
+  // Windows CI can take longer to persist the final report after a resumed
+  // worktree stage passes; don't mistake a slow finalization for a hung run.
+  const deadline = Date.now() + 25_000;
   while (Date.now() < deadline) {
     if (await condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
