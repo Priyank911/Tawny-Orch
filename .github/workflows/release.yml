@@ -12,8 +12,8 @@ jobs:
     name: Build and publish Windows installer
     runs-on: windows-latest
     env:
-      TAWNY_FIREBASE_API_KEY: ${{ vars.TAWNY_FIREBASE_API_KEY }}
-      TAWNY_GOOGLE_CLIENT_ID: ${{ vars.TAWNY_GOOGLE_CLIENT_ID }}
+      TAWNY_FIREBASE_API_KEY: ${{ secrets.TAWNY_FIREBASE_API_KEY }}
+      TAWNY_GOOGLE_CLIENT_ID: ${{ secrets.TAWNY_GOOGLE_CLIENT_ID }}
       TAWNY_GOOGLE_CLIENT_SECRET: ${{ secrets.TAWNY_GOOGLE_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +30,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/check-release-tag.mjs
       - name: Require Firebase sign-in configuration
-        run: node -e "if (!process.env.TAWNY_FIREBASE_API_KEY || !process.env.TAWNY_GOOGLE_CLIENT_ID || !process.env.TAWNY_GOOGLE_CLIENT_SECRET) { console.error('Set the TAWNY_FIREBASE_API_KEY and TAWNY_GOOGLE_CLIENT_ID GitHub Actions Variables and TAWNY_GOOGLE_CLIENT_SECRET GitHub Actions Secret before publishing configured installers.'); process.exit(1); }"
+        run: node -e "const required = ['TAWNY_FIREBASE_API_KEY', 'TAWNY_GOOGLE_CLIENT_ID', 'TAWNY_GOOGLE_CLIENT_SECRET']; const missing = required.filter((name) => !process.env[name]); if (missing.length) { console.error('Missing GitHub Actions secrets: ' + missing.join(', ')); process.exit(1); }"
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
