@@ -82,7 +82,13 @@ async function contextFor(adapter: AgentAdapter, role: TaskContract['role'] = 'p
 }
 function windows() { Object.defineProperty(process, 'platform', { value: 'win32', configurable: true }); }
 function startChild(options: Partial<Parameters<typeof realRunChild>[2]> = {}) {
-  return realRunChild(process.execPath, ['fake-provider.js'], { cwd: process.cwd(), timeoutMs: 10_000, ...options });
+  // `windows()` exercises Windows process-tree behavior on every CI host.
+  // An empty PATHEXT lets the host's real Node executable resolve as-is while
+  // runChild's spawn remains mocked, instead of appending Windows extensions.
+  return realRunChild(process.execPath, ['fake-provider.js'], {
+    cwd: process.cwd(), timeoutMs: 10_000, ...options,
+    env: { PATHEXT: '', ...options.env }
+  });
 }
 
 // Only the mocked runner is called here: no installed provider, auth or model is used.

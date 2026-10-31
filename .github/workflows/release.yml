@@ -32,8 +32,8 @@ jobs:
       - name: Require Firebase sign-in configuration
         run: node -e "if (!process.env.TAWNY_FIREBASE_API_KEY || !process.env.TAWNY_GOOGLE_CLIENT_ID || !process.env.TAWNY_GOOGLE_CLIENT_SECRET) { console.error('Set the TAWNY_FIREBASE_API_KEY and TAWNY_GOOGLE_CLIENT_ID GitHub Actions Variables and TAWNY_GOOGLE_CLIENT_SECRET GitHub Actions Secret before publishing configured installers.'); process.exit(1); }"
       - run: pnpm typecheck
-      - run: pnpm test
       - run: pnpm build
+      - run: pnpm test
       - name: Package unsigned Windows installer
         run: pnpm exec electron-builder --config electron-builder.yml --win nsis --x64 --publish never
       - name: Create Windows update manifest

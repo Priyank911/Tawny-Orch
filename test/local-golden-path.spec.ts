@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +33,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'tawny golden path '));
   project = join(root, 'project with spaces');
   mkdirSync(project);
+  project = realpathSync.native(project);
   git(project, ['init', '-b', 'main']);
   git(project, ['config', 'core.autocrlf', 'false']);
   git(project, ['config', 'user.email', 'offline@example.test']);

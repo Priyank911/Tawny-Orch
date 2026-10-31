@@ -121,9 +121,17 @@ describe('engine.createRun validates before persistence', () => {
     await rejectsWithoutWrites(input(join(root, 'bad\0directory')));
   });
 
-  it('resolves directory aliases to their real absolute path', async () => {
+  it('resolves directory aliases to their real absolute path', async (context) => {
     const alias = join(root, 'project alias');
-    symlinkSync(project, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+      symlinkSync(project, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP'].includes(code ?? '')) {
+        context.skip('Directory junctions are unavailable to this Windows account.');
+      }
+      throw error;
+    }
     const run = await engine.createRun(input(alias));
     expect(run.projectPath).toBe(realpathSync(project));
     expect((await engine.loadRunById(run.id))?.projectPath).toBe(realpathSync(project));
